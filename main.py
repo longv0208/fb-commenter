@@ -60,7 +60,8 @@ async def main():
         if cookies_path.exists():
             args.cookies = str(cookies_path)
         else:
-            args.cookies = str(base_dir / "cookies.txt")
+            account_list = parent_dir / "account" / "account list.txt"
+            args.cookies = str(account_list if account_list.is_file() else base_dir / "cookies.txt")
 
     if not args.comment_list:
         comment_dir = parent_dir / "comments"
@@ -77,7 +78,9 @@ async def main():
         if page_id_path.exists():
             args.page_id = page_id_path.read_text(encoding="utf-8-sig").strip()
         else:
-            args.page_id = ""
+            page_txt = parent_dir / "account" / "page.txt"
+            page_line = page_txt.read_text(encoding="utf-8-sig").strip() if page_txt.is_file() else ""
+            args.page_id = page_line if page_line.isdigit() else ""
 
     if not args.proxy:
         proxy_path = parent_dir / "account" / "proxy.txt"

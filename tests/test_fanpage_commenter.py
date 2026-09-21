@@ -81,11 +81,13 @@ async def test_login_navigates_and_cleans_up(monkeypatch, tmp_path):
     assert events[-1] == "playwright"
 
 @pytest.mark.asyncio
-async def test_random_comment():
+async def test_random_comment(tmp_path):
+    comments = tmp_path / "comments.txt"
+    comments.write_text("xin chao\n", encoding="utf-8")
     commenter = FacebookFanpageCommenter(
         urls="1234567890",
-        cookies_file="cookies.txt",
-        comment_file="comment_list.txt",
+        cookies_file=tmp_path / "cookies.txt",
+        comment_file=comments,
         page_id="1234567890"
     )
     assert len(commenter.comments) > 0

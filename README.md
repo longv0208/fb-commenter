@@ -1,43 +1,74 @@
-# Facebook Fanpage Commenter CLI
+# Facebook Fanpage Commenter
 
-Công cụ comment Fanpage Facebook qua CLI (dùng Chrome + cookie)
+Công cụ comment Facebook bằng cookie, dưới danh tính Page. Trình duyệt là InvisiblePlaywright trong thư mục `VisiblePlaywright`. Không dùng Graph API.
 
-## Cài đặt
+## Chạy
+
+Cần Python 3.12.
 
 ```bash
 cd tools/fb-commenter
 pip install -r requirements.txt
-playwright install chromium
+python -m invisible_playwright fetch
+python main.py
 ```
 
-## Cách dùng
+## Dữ liệu nằm ngoài git
+
+Repo git chỉ là thư mục `tools/fb-commenter`. Ba thư mục dữ liệu nằm cạnh `tools`, tức là thư mục cha `tool cmt`. Đẩy repo lên git không kèm các thư mục đó. Máy mới phải tự tạo lại:
+
+```text
+tool cmt/
+├── account/
+│   ├── account list.txt
+│   ├── page.txt
+│   └── proxy.txt
+├── comments/
+│   └── comment list.txt
+├── list UID/
+│   └── UID.txt
+└── tools/
+    └── fb-commenter/    ← repo git
+```
+
+Lệnh `python main.py` tự đọc các file đó:
+
+- `list UID/UID.txt`: mỗi dòng một UID bài viết
+- `comments/comment list.txt`: mỗi dòng một câu comment
+- `account/account list.txt`: cookie Facebook, có `c_user` và `xs`
+- `account/page.txt`: Page ID dạng số, dùng để bấm chuyển sang Page
+- `account/proxy.txt`: một dòng proxy, ví dụ `http://user:pass@host:port`
+
+Mỗi bài trong `UID.txt` nhận một câu chưa dùng. Giữa các comment, chương trình chờ ngẫu nhiên từ 1 đến 60 phút. Proxy được gắn vào trình duyệt lúc mở. Không có proxy thì trình duyệt không mở.
+
+Muốn xem từng bước:
 
 ```bash
-python main.py \
-  --urls 1234567890_9876543210,1234567890_9876543211 \
-  --cookies cookies.txt \
-  --comment-list comments.txt \
-  --page-id 1234567890 \
-  --page-token account/page.txt \
-  --proxy http://user:pass@proxy-ip:port \
-  --delay-min 1 \
-  --delay-max 60 \
-  --threads 3 \
-  --headless
+python main.py --verbose
 ```
 
-## File cần có
+Muốn chạy không hiện cửa sổ:
 
-- `cookies.txt` (mỗi dòng 1 cookie)
-- `comment_list.txt` (mỗi dòng 1 comment)
-- `account/page.txt` (Page Access Token, không commit hoặc in ra log)
+```bash
+python main.py --headless
+```
 
-## Lưu ý quan trọng
+Muốn comment vài bài cụ thể, không đụng cả file UID:
 
-- `--urls` phải là Page post object ID dạng `page_id_post_id`, hoặc URL bài viết hỗ trợ được chuyển về dạng này. Page/user ID đơn lẻ và `pfbid...` bị từ chối.
-- `--page-id` là tùy chọn nếu token hợp lệ có thể tự phân giải ID. Thứ tự ưu tiên là `--page-id` → `account/page_id.txt` → `GET /v26.0/me?fields=id`; resolver gửi token bằng header `Authorization: Bearer` và chỉ nhận ID dạng số. Lỗi HTTP, JSON hoặc kết nối dừng trước khi mở trình duyệt với thông báo tổng quát.
-- Page Access Token phải thuộc đúng Page, còn hạn, và có quyền bình luận cần thiết (thường `pages_manage_engagement` cùng tác vụ `MODERATE`).
-- HTTP 400 thường do target không tồn tại/không truy cập được, sai Page ID, token sai Page/quyền, hoặc post không dùng được với Graph API. Lỗi được ghi ở dạng status/code/message đã giới hạn; token/cookie không được ghi.
-- Ctrl+C dừng an toàn, đóng context/browser/Playwright và thoát với mã 130.
-- Proxy rất quan trọng để tránh block; không đặt thông tin xác thực proxy trong log.
-- Delay 1-60 phút là ngẫu nhiên. `--threads` hiện chỉ giữ tương thích CLI và chưa chạy song song.
+```bash
+python main.py --urls 1610321213811556,1110186588408179 --delay-min 0 --delay-max 0
+```
+
+## Cách comment
+
+1. Mở Facebook bằng cookie.
+2. Vào Page và bấm **Chuyển ngay** nếu chưa đứng ở Page.
+3. Mở UID. Số thuần được mở thành `https://www.facebook.com/<uid>`.
+4. Ghi đúng một lần vào ô bình luận rồi nhấn Enter.
+5. Chỉ tính thành công khi đúng câu đó hiện trên bài.
+
+## Kiểm tra
+
+```bash
+python -m pytest tests -q
+```
