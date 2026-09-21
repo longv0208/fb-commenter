@@ -15,6 +15,12 @@ class FakeCommenter:
         return None
 
 
+def write_proxy(tmp_path):
+    account = tmp_path / "account"
+    account.mkdir(exist_ok=True)
+    (account / "proxy.txt").write_text("http://127.0.0.1:8080\n", encoding="utf-8")
+
+
 def cli_args(page_id=None):
     return SimpleNamespace(
         urls="",
@@ -32,7 +38,7 @@ def cli_args(page_id=None):
 
 @pytest.mark.asyncio
 async def test_main_uses_explicit_page_id(monkeypatch, tmp_path):
-    (tmp_path / "account").mkdir()
+    write_proxy(tmp_path)
     monkeypatch.setattr(main, "__file__", str(tmp_path / "tools" / "fb-commenter" / "main.py"))
     monkeypatch.setattr(main.argparse.ArgumentParser, "parse_args", lambda self: cli_args("123"))
     FakeCommenter.instances = []
@@ -42,12 +48,13 @@ async def test_main_uses_explicit_page_id(monkeypatch, tmp_path):
 
     built = FakeCommenter.instances[0]
     assert built["page_id"] == "123"
+    assert built["proxy"] == "http://127.0.0.1:8080"
     assert "access_token" not in built
 
 
 @pytest.mark.asyncio
 async def test_main_uses_page_id_file(monkeypatch, tmp_path):
-    (tmp_path / "account").mkdir()
+    write_proxy(tmp_path)
     (tmp_path / "account" / "page_id.txt").write_text("456\n", encoding="utf-8")
     monkeypatch.setattr(main, "__file__", str(tmp_path / "tools" / "fb-commenter" / "main.py"))
     monkeypatch.setattr(main.argparse.ArgumentParser, "parse_args", lambda self: cli_args())

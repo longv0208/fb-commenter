@@ -70,12 +70,13 @@ async def test_login_navigates_and_cleans_up(monkeypatch, tmp_path):
     comments = tmp_path / "comments.txt"
     cookies.write_text("c_user=example; xs=session", encoding="utf-8")
     comments.write_text("hello\n", encoding="utf-8")
-    commenter = FacebookFanpageCommenter("123_456", cookies, comments, "123")
+    commenter = FacebookFanpageCommenter("123_456", cookies, comments, "123", proxy="http://127.0.0.1:8080")
     page_context = await commenter.login_with_cookie()
     assert commenter.page.url == "https://www.facebook.com/"
     assert page_context is commenter.context
     await commenter.close_browser()
     assert events[0][0] == "launch"
+    assert events[0][2]["server"] == "http://127.0.0.1:8080"
     assert "goto" in events
     assert events[-1] == "playwright"
 
