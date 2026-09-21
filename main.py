@@ -1,6 +1,7 @@
 import asyncio
 import argparse
 import logging
+from pathlib import Path
 from rich.console import Console
 from rich.logging import RichHandler
 
@@ -10,10 +11,10 @@ console = Console()
 
 async def main():
     parser = argparse.ArgumentParser(description="Facebook Fanpage Commenter CLI")
-    parser.add_argument("--urls", required=True, help="List of post IDs or URLs separated by comma")
-    parser.add_argument("--cookies", required=True, help="Path to cookies.txt file")
-    parser.add_argument("--comment-list", required=True, help="Path to comment_list.txt file")
-    parser.add_argument("--page-id", required=True, help="Facebook Page ID")
+    parser.add_argument("--urls", help="List of post IDs or URLs separated by comma")
+    parser.add_argument("--cookies", help="Path to cookies.txt file")
+    parser.add_argument("--comment-list", help="Path to comment_list.txt file")
+    parser.add_argument("--page-id", help="Facebook Page ID")
     parser.add_argument("--proxy", help="Proxy URL (e.g. http://user:pass@proxy-ip:port)")
     parser.add_argument("--delay-min", type=int, default=1, help="Minimum delay in minutes")
     parser.add_argument("--delay-max", type=int, default=60, help="Maximum delay in minutes")
@@ -22,6 +23,38 @@ async def main():
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
 
     args = parser.parse_args()
+
+    # Auto-detect files from parent folder
+    base_dir = Path(__file__).parent
+    parent_dir = base_dir.parent
+
+    if not args.urls:
+        post_ids_path = parent_dir / "account" / "post_ids.txt"
+        if post_ids_path.exists():
+            args.urls = post_ids_path.read_text().strip()
+        else:
+            args.urls = "1234567890,9876543210"
+
+    if not args.cookies:
+        cookies_path = parent_dir / "account" / "cookies.txt"
+        if cookies_path.exists():
+            args.cookies = str(cookies_path)
+        else:
+            args.cookies = str(base_dir / "cookies.txt")
+
+    if not args.comment_list:
+        comment_path = parent_dir / "comments" / "comment_list.txt"
+        if comment_path.exists():
+            args.comment_list = str(comment_path)
+        else:
+            args.comment_list = str(base_dir / "comment_list.txt")
+
+    if not args.page_id:
+        page_id_path = parent_dir / "account" / "page_id.txt"
+        if page_id_path.exists():
+            args.page_id = page_id_path.read_text().strip()
+        else:
+            args.page_id = "1234567890"
 
     # Setup logging
     logging.basicConfig(

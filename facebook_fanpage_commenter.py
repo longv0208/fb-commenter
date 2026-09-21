@@ -1,5 +1,4 @@
 import asyncio
-import aiohttp
 import random
 import logging
 import time
@@ -8,6 +7,9 @@ from pathlib import Path
 from playwright.async_api import async_playwright
 from rich.logging import RichHandler
 import httpx
+import uuid
+import base64
+import threading
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,11 +19,12 @@ logging.basicConfig(
 logger = logging.getLogger("fb_commenter")
 
 class FacebookFanpageCommenter:
-    def __init__(self, urls, cookies_file, comment_file, page_id, proxy=None, delay_min=1, delay_max=60, num_threads=3, headless=True):
+    def __init__(self, urls, cookies_file, comment_file, page_id, access_token=None, proxy=None, delay_min=1, delay_max=60, num_threads=3, headless=True):
         self.urls = self.parse_urls(urls)
         self.cookies_file = Path(cookies_file)
         self.comment_file = Path(comment_file)
         self.page_id = page_id
+        self.access_token = access_token or "YOUR_PAGE_ACCESS_TOKEN"
         self.proxy = proxy
         self.delay_min = delay_min
         self.delay_max = delay_max
@@ -42,6 +45,17 @@ class FacebookFanpageCommenter:
             comments = [line.strip() for line in f if line.strip()]
         logger.info(f"Đã tải {len(comments)} comment")
         return comments
+
+    def load_uids(self):
+        uid_file = Path(__file__).parent.parent / "list UID" / "UID.txt"
+        if uid_file.exists():
+            with open(uid_file, "r", encoding="utf-8") as f:
+                uids = [line.strip() for line in f if line.strip()]
+            logger.info(f"Đã tải {len(uids)} UID")
+            return uids
+        else:
+            logger.warning("Không tìm thấy file UID.txt, dùng UID mặc định")
+            return ["1234567890", "9876543210"]
 
     async def login_with_cookie(self):
         logger.info("Đang login bằng cookie (Chrome)...")
@@ -64,7 +78,7 @@ class FacebookFanpageCommenter:
         with open(self.cookies_file, "r", encoding="utf-8") as f:
             for line in f:
                 if line.strip():
-                    cookies.append({"name": "c_user", "value": line.strip()})  # simple cookie format
+                    cookies.append({"name": "c_user", "value": line.strip(), "url": "https://www.facebook.com"})
 
         await context.add_cookies(cookies)
         self.page = await context.new_page()
@@ -81,7 +95,7 @@ class FacebookFanpageCommenter:
             url = f"https://graph.facebook.com/v18.0/{post_id}/feed"
             payload = {
                 "message": comment_text,
-                "access_token": "YOUR_PAGE_ACCESS_TOKEN"  # user sẽ cung cấp token
+                "access_token": self.access_token
             }
 
             # Nếu có proxy, dùng httpx
@@ -100,19 +114,23 @@ class FacebookFanpageCommenter:
             return False
 
     async def comment_random(self):
+        uids = self.load_uids()
+
         if not self.comments:
             logger.warning("Không có comment nào")
             return
 
         while self.comments:
             comment = random.choice(self.comments)
-            post_id = random.choice(self.urls)
+            uid = random.choice(uids)
 
-            logger.info(f"Đang comment: {comment} trên post {post_id}")
+            post_id = uid  # UID làm post_id
+
+            logger.info(f"Đang comment: {comment} trên UID {uid}")
 
             success = await self.post_comment(post_id, comment)
             if success:
-                self.comments.remove(comment)  # remove after success
+                self.comments.remove(comment)
 
             delay = random.randint(self.delay_min * 60, self.delay_max * 60)
             logger.info(f"Đang delay {delay // 60} phút...")
