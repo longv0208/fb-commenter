@@ -187,9 +187,21 @@ class FacebookFanpageCommenter:
             return f"https://www.facebook.com/{value}"
         raise ValueError("Target UI cần URL Facebook, UID số, hoặc Page post ID")
 
-    def proxy_config(self):
+    def ensure_proxy(self):
+        if self.proxy:
+            return self.proxy
+        proxy_path = Path(__file__).resolve().parents[2] / "account" / "proxy.txt"
+        if proxy_path.is_file():
+            self.proxy = next(
+                (line.strip() for line in proxy_path.read_text(encoding="utf-8-sig").splitlines() if line.strip()),
+                "",
+            )
         if not self.proxy:
-            return None
+            raise RuntimeError("Không có proxy để gắn vào trình duyệt. Điền account/proxy.txt")
+        return self.proxy
+
+    def proxy_config(self):
+        self.ensure_proxy()
         parsed = urlsplit(self.proxy)
         if not parsed.hostname:
             return {"server": self.proxy}

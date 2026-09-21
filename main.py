@@ -53,11 +53,7 @@ async def main():
     parent_dir = base_dir.parents[1]
 
     if not args.urls:
-        post_ids_path = parent_dir / "account" / "post_ids.txt"
-        if post_ids_path.exists():
-            args.urls = post_ids_path.read_text().strip()
-        else:
-            args.urls = ""
+        args.urls = ""
 
     if not args.cookies:
         cookies_path = parent_dir / "account" / "cookies.txt"
@@ -83,6 +79,14 @@ async def main():
         else:
             args.page_id = ""
 
+    if not args.proxy:
+        proxy_path = parent_dir / "account" / "proxy.txt"
+        if proxy_path.is_file():
+            args.proxy = next(
+                (line.strip() for line in proxy_path.read_text(encoding="utf-8-sig").splitlines() if line.strip()),
+                "",
+            )
+
     # Setup logging
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -101,6 +105,10 @@ async def main():
         args.page_id = str(args.page_id).strip()
         if not re.fullmatch(r"[0-9]+", args.page_id):
             raise ValueError("Facebook Page ID không hợp lệ; phải là chuỗi số ASCII")
+        if not args.proxy:
+            raise ValueError(
+                "Cần proxy trong account/proxy.txt hoặc --proxy trước khi mở trình duyệt"
+            )
 
         commenter = FacebookFanpageCommenter(
             urls=args.urls,
