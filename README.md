@@ -1,85 +1,107 @@
 # Facebook Fanpage Commenter
 
-Công cụ comment Facebook bằng cookie, dưới danh tính Page. Trình duyệt là Chrome cài trên máy, mở qua Playwright. Không dùng Graph API.
+Comment Facebook bằng cookie, dưới danh tính Page. Trình duyệt là Chrome cài trên máy, mở qua Playwright. Không dùng Graph API.
 
-## Chạy
+Có hai cách chạy:
 
-Cần Python 3.12.
+- `python main.py` comment lần lượt các UID trong `list UID/UID.txt`.
+- `python main.py campaign <tên>` tự vào các group, lướt feed, lọc bài, rồi comment.
 
-```bash
-cd tools/fb-commenter
+## Cài đặt
+
+Cần Python 3.12 và Chrome đã cài trên máy.
+
+```powershell
+cd "E:\Telegram Desktop\tool cmt\tools\fb-commenter"
 pip install -r requirements.txt
 python -m playwright install
-python main.py
 ```
+
+Máy này đang dùng Python tại `C:\Users\FPTSHOP\AppData\Local\Temp\invpw-venv\Scripts\python.exe`. Lệnh bên dưới viết tắt là `python`.
 
 ## Dữ liệu nằm ngoài git
 
-Repo git chỉ là thư mục `tools/fb-commenter`. Ba thư mục dữ liệu nằm cạnh `tools`, tức là thư mục cha `tool cmt`. Đẩy repo lên git không kèm các thư mục đó. Máy mới phải tự tạo lại:
+Repo git chỉ là `tools/fb-commenter`. Cookie, comment, UID, proxy và campaign nằm ở thư mục cha `tool cmt`, không được đẩy lên git.
 
 ```text
 tool cmt/
 ├── account/
 │   ├── account list.txt
 │   ├── page.txt
-│   └── proxy.txt
+│   ├── proxy.txt
+│   ├── hidden-authors.txt
+│   └── campaigns/
+│       └── fpt_courses.json
 ├── comments/
 │   └── comment list.txt
 ├── list UID/
 │   └── UID.txt
 └── tools/
-    └── fb-commenter/    ← repo git
+    └── fb-commenter/
 ```
 
-Lệnh `python main.py` tự đọc các file đó:
+- `account/account list.txt`: cookie có `c_user` và `xs`.
+- `account/page.txt`: Page ID dạng số. Tool mở trang Page và bấm **Chuyển ngay**.
+- `account/proxy.txt`: một dòng proxy, dạng `http://user:pass@host:port`. Lệnh UID bắt buộc có proxy. Campaign có thể thêm `--no-proxy`.
+- `comments/comment list.txt`: mỗi dòng một câu. Mỗi bài lấy một câu chưa dùng trong lượt đó.
+- `list UID/UID.txt`: mỗi dòng một UID hoặc link bài. Chỉ dùng cho `python main.py`.
+- `account/hidden-authors.txt`: mỗi dòng một UID người đăng. Campaign bỏ bài của các UID này và bài do chính Page đăng.
+- `account/campaigns/<tên>.json`: danh sách group và điều kiện lọc. Mẫu ở `config/campaign.example.json`.
 
-- `list UID/UID.txt`: mỗi dòng một UID bài viết
-- `comments/comment list.txt`: mỗi dòng một câu comment
-- `account/account list.txt`: cookie Facebook, có `c_user` và `xs`
-- `account/page.txt`: Page ID dạng số, dùng để bấm chuyển sang Page
-- `account/proxy.txt`: một dòng proxy, ví dụ `http://user:pass@host:port`
-- `account/hidden-authors.txt`: mỗi dòng một UID người đăng cần bỏ qua
-- `account/campaigns/<tên>.json`: danh sách group và mã môn. Mẫu nằm ở `config/campaign.example.json`
+## Comment theo UID
 
-Quét group rồi comment:
-
-```bash
-python main.py campaign fpt_courses --dry-run
-python main.py campaign fpt_courses
+```powershell
+python main.py
 ```
 
-Dry-run chỉ quét và lọc, không gửi. Lượt gửi thật cần biến môi trường `JEV_API_KEY`. Bài khớp mã môn hoặc câu xin hỗ trợ mới được Jev gắn nhãn. Nhãn `comment` với độ tin cậy từ `0.8` mới được gửi. Nghỉ giữa các comment của campaign là `cooldown_seconds` trong file JSON, mặc định 120 giây. Lệnh `python main.py` không campaign vẫn đi `UID.txt` và delay 1–60 phút.
+Mỗi UID một câu. Giữa hai comment chờ ngẫu nhiên 1 đến 60 phút. Bài lỗi thì bỏ qua, không chờ, và câu đó còn lại cho lần sau. Cookie sai thì dừng cả lượt.
 
-Mỗi bài trong `UID.txt` nhận một câu chưa dùng. Giữa các comment, chương trình chờ ngẫu nhiên từ 1 đến 60 phút. Proxy được gắn vào trình duyệt lúc mở. Không có proxy thì trình duyệt không mở.
+Một bài, không chờ:
 
-Muốn xem từng bước:
-
-```bash
-python main.py --verbose
+```powershell
+python main.py --urls 1610321213811556 --delay-min 0 --delay-max 0
 ```
 
-Muốn chạy không hiện cửa sổ:
+`--verbose` in chi tiết. `--headless` không hiện cửa sổ Chrome.
 
-```bash
-python main.py --headless
+## Quét group rồi comment
+
+Thêm link group vào `groups` trong `account/campaigns/fpt_courses.json`. Một lượt đi lần lượt hết các group trong file, cùng một cửa sổ Chrome.
+
+```powershell
+python main.py campaign fpt_courses --no-proxy --verbose
 ```
 
-Muốn comment vài bài cụ thể, không đụng cả file UID:
+Các bước:
 
-```bash
-python main.py --urls 1610321213811556,1110186588408179 --delay-min 0 --delay-max 0
+1. Mở Chrome và đăng nhập bằng cookie.
+2. Vào Page, bấm **Chuyển ngay**.
+3. Vào group. Feed mặc định là **Hoạt động mới đây**. Tool bấm dòng đó và chọn **Bài viết mới**.
+4. Lướt feed. Mỗi lần khoảng một màn hình, rồi chờ `scroll_pause_ms`. Dừng group khi đủ `max_scrolls`, hoặc khi `empty_scroll_limit` lần liên tiếp không thấy bài mới.
+5. Giữ bài có mã trong `subjects` hoặc cụm trong `help_phrases`. So khớp không phân biệt hoa thường và dấu. `MAD` cũng khớp `MAD101`.
+6. Bỏ bài không có chữ, bài của Page, bài của UID trong `hidden-authors.txt`, và bài đã comment thành công.
+7. Gửi một câu trong `comment list.txt`. Chỉ tính thành công khi đúng câu đó hiện trên bài.
+
+Với cấu hình hiện tại, mỗi group lướt tối đa 20 lần, mỗi lần chờ 1,5 giây. Phần lướt khoảng 30 giây nếu feed còn bài mới. Cả lượt còn cộng thời gian đăng nhập và chuyển Page.
+
+Giới hạn trong file JSON:
+
+- `max_comments_per_group`: 5
+- `max_comments_per_run`: 15
+- `cooldown_seconds`: 120 giây giữa hai comment campaign
+
+Xem bài sẽ comment, chưa gửi:
+
+```powershell
+python main.py campaign fpt_courses --dry-run --no-proxy
 ```
 
-## Cách comment
+`use_jev` mặc định là `false`: bài khớp từ khóa được comment luôn. Đặt `true` thì cần biến môi trường `JEV_API_KEY`. Jev trả nhãn `comment` với độ tin cậy từ `jev_confidence` thì mới gửi. Lỗi Jev thì bỏ bài đó.
 
-1. Mở Facebook bằng cookie.
-2. Vào Page và bấm **Chuyển ngay** nếu chưa đứng ở Page.
-3. Mở UID. Số thuần được mở thành `https://www.facebook.com/<uid>`.
-4. Ghi đúng một lần vào ô bình luận rồi nhấn Enter.
-5. Chỉ tính thành công khi đúng câu đó hiện trên bài.
+Lịch sử nằm ở `tools/fb-commenter/data/app.db`. Bài đã gửi thành công không bị gửi lại.
 
 ## Kiểm tra
 
-```bash
+```powershell
 python -m pytest tests -q
 ```
