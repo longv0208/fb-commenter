@@ -65,7 +65,7 @@ async def test_login_navigates_and_cleans_up(monkeypatch, tmp_path):
         async def __aexit__(self, *args):
             events.append("playwright")
 
-    monkeypatch.setattr(commenter_module, "InvisiblePlaywright", FakeLauncher)
+    monkeypatch.setattr(commenter_module, "ChromeSession", FakeLauncher)
     cookies = tmp_path / "cookies.txt"
     comments = tmp_path / "comments.txt"
     cookies.write_text("c_user=example; xs=session", encoding="utf-8")

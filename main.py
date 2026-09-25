@@ -2,59 +2,22 @@ import asyncio
 import argparse
 import logging
 import re
+import sys
 from pathlib import Path
 from rich.console import Console
 from rich.logging import RichHandler
 
+from campaign_run import run_campaign
 from facebook_fanpage_commenter import FacebookFanpageCommenter
 
 console = Console()
 
 
-def sanitize_error_text(value, secret=""):
-    text = str(value)
-    if secret:
-        text = text.replace(secret, "<redacted>")
-    text = re.sub(
-        r"(?i)(access_token|token|password|cookie)\s*[:=]\s*[\"']?[^\s,}\"']+",
-        r"\1=<redacted>",
-        text,
-    )
-    text = re.sub(
-        r"(?i)(?:bearer|oauth)\s+\S+",
-        "Authorization <redacted>",
-        text,
-    )
-    text = re.sub(
-        r"(?i)(?:https?|socks5?)://[^/@\s]+:[^/@\s]+@",
-        r"<proxy-redacted>@",
-        text,
-    )
-    return re.sub(r"[\r\n]+", " ", text).strip()[:400]
+def sys_argv():
+    return sys.argv
 
 
-async def main():
-    parser = argparse.ArgumentParser(description="Facebook Fanpage Commenter CLI")
-    parser.add_argument("--urls", help="List of post IDs or URLs separated by comma")
-    parser.add_argument("--cookies", help="Path to cookies.txt file")
-    parser.add_argument("--comment-list", help="Path to comment_list.txt file")
-    parser.add_argument("--page-id", help="Facebook Page ID")
-    parser.add_argument("--proxy", help="Proxy URL (e.g. http://user:pass@proxy-ip:port)")
-    parser.add_argument("--delay-min", type=int, default=1, help="Minimum delay in minutes (default 1)")
-    parser.add_argument("--delay-max", type=int, default=60, help="Maximum delay in minutes (default 60)")
-    parser.add_argument("--threads", type=int, default=3, help="Number of concurrent threads")
-    parser.add_argument("--headless", action="store_true", help="Run in headless mode")
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
-
-    args = parser.parse_args()
-
-    # Auto-detect files from parent folder
-    base_dir = Path(__file__).resolve().parent
-    parent_dir = base_dir.parents[1]
-
-    if not args.urls:
-        args.urls = ""
-
+def build_commenter(args, base_dir, parent_dir):
     if not args.cookies:
         cookies_path = parent_dir / "account" / "cookies.txt"
         if cookies_path.exists():
@@ -89,6 +52,99 @@ async def main():
                 (line.strip() for line in proxy_path.read_text(encoding="utf-8-sig").splitlines() if line.strip()),
                 "",
             )
+    return args
+
+
+async def run_campaign_command(argv):
+    parser = argparse.ArgumentParser(description="Quét group rồi comment bài đã duyệt")
+    parser.add_argument("name")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--no-proxy", action="store_true")
+    parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--verbose", action="store_true")
+    args = parser.parse_args(argv)
+    base_dir = Path(__file__).resolve().parent
+    parent_dir = base_dir.parents[1]
+    settings = build_commenter(
+        argparse.Namespace(
+            cookies=None,
+            comment_list=None,
+            page_id=None,
+            proxy=None,
+        ),
+        base_dir,
+        parent_dir,
+    )
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(message)s",
+        handlers=[RichHandler(console=console)],
+    )
+    if not settings.page_id or not str(settings.page_id).isdigit():
+        raise SystemExit("Cần Page ID số trong account/page.txt")
+    if not args.no_proxy and not settings.proxy:
+        raise SystemExit("Cần proxy trong account/proxy.txt")
+    commenter = FacebookFanpageCommenter(
+        urls="",
+        cookies_file=settings.cookies,
+        comment_file=settings.comment_list,
+        page_id=settings.page_id,
+        proxy=None if args.no_proxy else settings.proxy,
+        headless=args.headless,
+        require_proxy=not args.no_proxy,
+    )
+    await run_campaign(commenter, parent_dir, args.name, args.dry_run)
+
+
+def sanitize_error_text(value, secret=""):
+    text = str(value)
+    if secret:
+        text = text.replace(secret, "<redacted>")
+    text = re.sub(
+        r"(?i)(access_token|token|password|cookie)\s*[:=]\s*[\"']?[^\s,}\"']+",
+        r"\1=<redacted>",
+        text,
+    )
+    text = re.sub(
+        r"(?i)(?:bearer|oauth)\s+\S+",
+        "Authorization <redacted>",
+        text,
+    )
+    text = re.sub(
+        r"(?i)(?:https?|socks5?)://[^/@\s]+:[^/@\s]+@",
+        r"<proxy-redacted>@",
+        text,
+    )
+    return re.sub(r"[\r\n]+", " ", text).strip()[:400]
+
+
+async def main():
+    if len(sys_argv()) > 1 and sys_argv()[1] == "campaign":
+        await run_campaign_command(sys_argv()[2:])
+        return
+
+    parser = argparse.ArgumentParser(description="Facebook Fanpage Commenter CLI")
+    parser.add_argument("--urls", help="List of post IDs or URLs separated by comma")
+    parser.add_argument("--cookies", help="Path to cookies.txt file")
+    parser.add_argument("--comment-list", help="Path to comment_list.txt file")
+    parser.add_argument("--page-id", help="Facebook Page ID")
+    parser.add_argument("--proxy", help="Proxy URL (e.g. http://user:pass@proxy-ip:port)")
+    parser.add_argument("--delay-min", type=int, default=1, help="Minimum delay in minutes (default 1)")
+    parser.add_argument("--delay-max", type=int, default=60, help="Maximum delay in minutes (default 60)")
+    parser.add_argument("--threads", type=int, default=3, help="Number of concurrent threads")
+    parser.add_argument("--headless", action="store_true", help="Run in headless mode")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+
+    args = parser.parse_args()
+
+    # Auto-detect files from parent folder
+    base_dir = Path(__file__).resolve().parent
+    parent_dir = base_dir.parents[1]
+
+    if not args.urls:
+        args.urls = ""
+
+    args = build_commenter(args, base_dir, parent_dir)
 
     # Setup logging
     logging.basicConfig(

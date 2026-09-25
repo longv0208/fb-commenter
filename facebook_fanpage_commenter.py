@@ -19,6 +19,73 @@ logging.basicConfig(
     handlers=[RichHandler()]
 )
 logger = logging.getLogger("fb_commenter")
+
+_GROUP_POST_SCRIPT = """
+() => {
+  const messageText = (box) => {
+    const preferred = box.querySelectorAll('[data-ad-preview="message"], [data-ad-comet-preview="message"], [data-ad-rendering-role="story_message"]');
+    if (preferred.length) {
+      return Array.from(preferred).map((el) => (el.innerText || '').trim()).filter(Boolean).join('\\n').slice(0, 2000);
+    }
+    const lines = [];
+    for (const el of box.querySelectorAll('div[dir="auto"], span[dir="auto"]')) {
+      const line = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+      if (line.length < 12 || /^facebook$/i.test(line)) continue;
+      if (lines.some((item) => item.includes(line) || line.includes(item))) continue;
+      lines.push(line);
+    }
+    if (lines.length) return lines.join('\\n').slice(0, 2000);
+    return (box.innerText || '').replace(/facebook/gi, ' ').replace(/\\s+/g, ' ').trim().slice(0, 2000);
+  };
+  const posts = [];
+  const seen = new Set();
+  const groupMatch = location.pathname.match(/\\/groups\\/([^/]+)/);
+  const groupSlug = groupMatch ? groupMatch[1] : '';
+  const anchors = document.querySelectorAll(
+    'a[href*="/posts/"], a[href*="/permalink/"], a[href*="pcb."], a[href*="story_fbid="], a[href*="multi_permalinks="]'
+  );
+  for (const anchor of anchors) {
+    let href = '';
+    if (/\\/posts\\/|\\/permalink\\//.test(anchor.href) && anchor.href.includes('/groups/')) {
+      href = anchor.href.split('?')[0];
+    } else {
+      const id = anchor.href.match(/pcb\\.(\\d+)/)
+        || anchor.href.match(/multi_permalinks=(\\d+)/)
+        || anchor.href.match(/story_fbid=(\\d+)/);
+      if (!id) continue;
+      href = groupSlug
+        ? 'https://www.facebook.com/groups/' + groupSlug + '/posts/' + id[1]
+        : 'https://www.facebook.com/' + id[1];
+    }
+    if (!href || seen.has(href)) continue;
+    let box = anchor;
+    let bestLength = 0;
+    let node = anchor;
+    for (let i = 0; i < 14 && node.parentElement; i += 1) {
+      node = node.parentElement;
+      const length = (node.innerText || '').trim().length;
+      if (length > 3500) break;
+      if (length > bestLength) {
+        box = node;
+        bestLength = length;
+      }
+    }
+    const text = messageText(box);
+    if (text.length < 30) continue;
+    seen.add(href);
+    let authorId = '';
+    for (const link of box.querySelectorAll('a[href]')) {
+      const match = link.href.match(/profile\\.php\\?id=(\\d+)/) || link.href.match(/\\/user\\/(\\d+)/);
+      if (match) {
+        authorId = match[1];
+        break;
+      }
+    }
+    posts.push({ post_url: href, text: text.slice(0, 2000), author_id: authorId });
+  }
+  return posts;
+}
+"""
 FACEBOOK_URL = "https://www.facebook.com/"
 InvisiblePlaywright = None
 
@@ -45,13 +112,33 @@ def sanitize_error_text(value, secret="", max_length=400):
     return re.sub(r"[\r\n]+", " ", text).strip()[:max_length]
 
 
+class ChromeSession:
+    def __init__(self, headless, proxy):
+        self.headless = headless
+        self.proxy = proxy
+        self._playwright = None
+
+    async def __aenter__(self):
+        from playwright.async_api import async_playwright
+        self._playwright = await async_playwright().start()
+        options = {"channel": "chrome", "headless": self.headless}
+        if self.proxy:
+            options["proxy"] = self.proxy
+        return await self._playwright.chromium.launch(**options)
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self._playwright:
+            await self._playwright.stop()
+
+
 class FacebookFanpageCommenter:
-    def __init__(self, urls, cookies_file, comment_file, page_id, access_token=None, proxy=None, delay_min=1, delay_max=60, num_threads=3, headless=True, comment_mode="ui"):
+    def __init__(self, urls, cookies_file, comment_file, page_id, access_token=None, proxy=None, delay_min=1, delay_max=60, num_threads=3, headless=True, comment_mode="ui", require_proxy=True):
         self.urls = self.parse_urls(urls)
         self.cookies_file = Path(cookies_file)
         self.comment_file = Path(comment_file)
         self.page_id = str(page_id).strip() if page_id else ""
         self.proxy = proxy
+        self.require_proxy = require_proxy
         self.delay_min = delay_min
         self.delay_max = delay_max
         self.num_threads = num_threads
@@ -212,19 +299,13 @@ class FacebookFanpageCommenter:
             config["password"] = parsed.password or ""
         return config
 
-    def _invisible_launcher(self):
-        global InvisiblePlaywright
-        if InvisiblePlaywright is None:
-            from invisible_playwright.async_api import InvisiblePlaywright as Loaded
-            InvisiblePlaywright = Loaded
-        return InvisiblePlaywright(
-            headless=bool(self.headless),
-            proxy=self.proxy_config(),
-        )
+    def _chrome_launcher(self):
+        proxy = self.proxy_config() if self.require_proxy else None
+        return ChromeSession(headless=bool(self.headless), proxy=proxy)
 
     async def login_with_cookie(self):
-        logger.info("Đang login bằng cookie (InvisiblePlaywright)...")
-        self._launcher = self._invisible_launcher()
+        logger.info("Đang login bằng cookie (Chrome)...")
+        self._launcher = self._chrome_launcher()
         try:
             self.browser = await self._launcher.__aenter__()
             context = await self.browser.new_context()
@@ -278,37 +359,20 @@ class FacebookFanpageCommenter:
         if not await switch_now.count():
             raise RuntimeError("Không thấy nút chuyển sang Page")
         await switch_now.first.click()
-        await self.page.wait_for_timeout(2500)
-        if await switch_now.count():
+        try:
+            await switch_now.first.wait_for(state="hidden", timeout=8000)
+        except Exception:
             raise RuntimeError("Không xác nhận được danh tính Page")
         self._page_ready = True
 
     async def _set_comment_text(self, composer, comment_text):
         """Put the comment in the box once. Stealth fill() types it twice."""
-        await composer.evaluate(
-            """(el, text) => {
-                el.focus();
-                const selection = window.getSelection();
-                const range = document.createRange();
-                range.selectNodeContents(el);
-                selection.removeAllRanges();
-                selection.addRange(range);
-                document.execCommand('insertText', false, text);
-                const written = (el.innerText || '').replace(/\\s+/g, ' ').trim();
-                if (written !== text) {
-                    el.textContent = text;
-                    el.dispatchEvent(new InputEvent('input', {
-                        bubbles: true,
-                        data: text,
-                        inputType: 'insertText',
-                    }));
-                }
-            }""",
-            comment_text,
-        )
+        await composer.click()
+        await self.page.keyboard.insert_text(comment_text)
+        await self.page.wait_for_timeout(300)
         written = " ".join((await composer.inner_text()).split())
-        if written != comment_text:
-            raise RuntimeError("Ô comment không chứa đúng một bản nội dung")
+        if written.count(comment_text) != 1:
+            raise RuntimeError(f"Ô comment không chứa đúng một bản nội dung: {written[:120]}")
 
     async def _post_comment_ui(self, post_id, comment_text):
         if not self.page:
@@ -321,7 +385,7 @@ class FacebookFanpageCommenter:
             composer = self.page.locator(
                 '[contenteditable="true"][aria-label*="Bình luận"], '
                 '[contenteditable="true"][aria-label*="comment" i]'
-            ).first
+            ).locator("visible=true").first
             try:
                 await composer.wait_for(state="visible", timeout=20000)
             except Exception:
@@ -380,6 +444,30 @@ class FacebookFanpageCommenter:
             except asyncio.CancelledError:
                 logger.info("Stopped by user")
                 raise
+
+    async def comment_posts(self, jobs, cooldown_seconds=0):
+        """Comment each job in order. A failed job does not wait."""
+        for index, job in enumerate(jobs):
+            try:
+                target = self.ui_target_url(job.post_url)
+            except ValueError as error:
+                logger.warning("Bỏ qua target không hợp lệ: %s", error)
+                job.success = False
+                continue
+            logger.info("Đang comment trên %s", target)
+            job.success = await self.post_comment(job.post_url, job.comment)
+            if not job.success:
+                logger.warning("Comment không hiện trên %s", job.post_url)
+                continue
+            if cooldown_seconds > 0 and index < len(jobs) - 1:
+                logger.info("Nghỉ %s giây", cooldown_seconds)
+                await asyncio.sleep(cooldown_seconds)
+        return jobs
+
+    async def collect_group_posts(self):
+        if not self.page:
+            raise RuntimeError("Chưa có phiên Facebook để quét group")
+        return await self.page.evaluate(_GROUP_POST_SCRIPT)
 
     async def run(self):
         try:

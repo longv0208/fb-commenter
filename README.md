@@ -1,6 +1,6 @@
 # Facebook Fanpage Commenter
 
-Công cụ comment Facebook bằng cookie, dưới danh tính Page. Trình duyệt là InvisiblePlaywright trong thư mục `VisiblePlaywright`. Không dùng Graph API.
+Công cụ comment Facebook bằng cookie, dưới danh tính Page. Trình duyệt là Chrome cài trên máy, mở qua Playwright. Không dùng Graph API.
 
 ## Chạy
 
@@ -9,7 +9,7 @@ Cần Python 3.12.
 ```bash
 cd tools/fb-commenter
 pip install -r requirements.txt
-python -m invisible_playwright fetch
+python -m playwright install
 python main.py
 ```
 
@@ -38,6 +38,17 @@ Lệnh `python main.py` tự đọc các file đó:
 - `account/account list.txt`: cookie Facebook, có `c_user` và `xs`
 - `account/page.txt`: Page ID dạng số, dùng để bấm chuyển sang Page
 - `account/proxy.txt`: một dòng proxy, ví dụ `http://user:pass@host:port`
+- `account/hidden-authors.txt`: mỗi dòng một UID người đăng cần bỏ qua
+- `account/campaigns/<tên>.json`: danh sách group và mã môn. Mẫu nằm ở `config/campaign.example.json`
+
+Quét group rồi comment:
+
+```bash
+python main.py campaign fpt_courses --dry-run
+python main.py campaign fpt_courses
+```
+
+Dry-run chỉ quét và lọc, không gửi. Lượt gửi thật cần biến môi trường `JEV_API_KEY`. Bài khớp mã môn hoặc câu xin hỗ trợ mới được Jev gắn nhãn. Nhãn `comment` với độ tin cậy từ `0.8` mới được gửi. Nghỉ giữa các comment của campaign là `cooldown_seconds` trong file JSON, mặc định 120 giây. Lệnh `python main.py` không campaign vẫn đi `UID.txt` và delay 1–60 phút.
 
 Mỗi bài trong `UID.txt` nhận một câu chưa dùng. Giữa các comment, chương trình chờ ngẫu nhiên từ 1 đến 60 phút. Proxy được gắn vào trình duyệt lúc mở. Không có proxy thì trình duyệt không mở.
 

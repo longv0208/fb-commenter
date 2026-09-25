@@ -1,0 +1,13 @@
+{
+  "groups": [
+    "https://www.facebook.com/groups/example"
+  ],
+  "subjects": ["CSD201"],
+  "max_scrolls": 30,
+  "empty_scroll_limit": 3,
+  "max_comments_per_group": 5,
+  "max_comments_per_run": 15,
+  "cooldown_seconds": 120,
+  "jev_confidence": 0.8,
+  "jev_review_all": false
+}
