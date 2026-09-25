@@ -2,9 +2,13 @@
   "groups": [
     "https://www.facebook.com/groups/example"
   ],
-  "subjects": ["CSD201"],
-  "max_scrolls": 30,
-  "empty_scroll_limit": 3,
+  "subjects": ["MAD"],
+  "help_phrases": ["xin tai lieu", "can support"],
+  "use_jev": false,
+  "max_scrolls": 20,
+  "empty_scroll_limit": 4,
+  "scroll_pixels": 1100,
+  "scroll_pause_ms": 1500,
   "max_comments_per_group": 5,
   "max_comments_per_run": 15,
   "cooldown_seconds": 120,
