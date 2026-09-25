@@ -1,4 +1,4 @@
 rich>=13.0.0
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
-invisible-playwright
+playwright>=1.40.0
