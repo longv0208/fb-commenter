@@ -62,6 +62,7 @@ async def run_campaign_command(argv):
     parser.add_argument("--no-proxy", action="store_true")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--cooldown", type=int, default=None, help="Giây nghỉ giữa hai comment. 0 là không nghỉ.")
     args = parser.parse_args(argv)
     base_dir = Path(__file__).resolve().parent
     parent_dir = base_dir.parents[1]
@@ -93,7 +94,7 @@ async def run_campaign_command(argv):
         headless=args.headless,
         require_proxy=not args.no_proxy,
     )
-    await run_campaign(commenter, parent_dir, args.name, args.dry_run)
+    await run_campaign(commenter, parent_dir, args.name, args.dry_run, cooldown_seconds=args.cooldown)
 
 
 def sanitize_error_text(value, secret=""):
