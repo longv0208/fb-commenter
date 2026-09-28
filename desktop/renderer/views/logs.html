@@ -1,0 +1,13 @@
+<h1>Logs</h1>
+<div class="log-toolbar">
+  <select id="log-account"><option value="*">Tất cả account</option></select>
+  <button class="chip on" data-level="INFO">INFO</button>
+  <button class="chip on" data-level="WARNING">WARN</button>
+  <button class="chip on" data-level="ERROR">ERROR</button>
+  <button class="chip" data-level="DEBUG">DEBUG</button>
+  <input type="text" id="log-search" placeholder="Tìm trong log…" style="flex:1;min-width:140px">
+  <label style="margin:0"><input type="checkbox" id="log-autoscroll" checked> Auto-scroll</label>
+  <button class="btn btn-sm" id="log-clear">Xóa</button>
+  <button class="btn btn-sm" id="log-export">Export .log</button>
+</div>
+<div class="log-area" id="log-area"></div>

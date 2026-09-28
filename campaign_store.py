@@ -8,6 +8,8 @@ def connect(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path)
     db.row_factory = sqlite3.Row
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA busy_timeout=10000")
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS posts (
@@ -33,8 +35,16 @@ def connect(path):
         )
         """
     )
+    _ensure_column(db, "posts", "account_name", "account_name TEXT DEFAULT ''")
+    _ensure_column(db, "comment_history", "account_name", "account_name TEXT DEFAULT ''")
     db.commit()
     return db
+
+
+def _ensure_column(db, table, column, ddl):
+    cols = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
 
 
 def post_status(db, post_url):
@@ -61,15 +71,16 @@ def already_commented(db, post_url):
     return row is not None
 
 
-def save_post(db, post, status, label=None, confidence=None):
+def save_post(db, post, status, label=None, confidence=None, account_name=""):
     db.execute(
         """
-        INSERT INTO posts (post_url, group_url, author_id, content, status, jev_label, jev_confidence, seen_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO posts (post_url, group_url, author_id, content, status, jev_label, jev_confidence, seen_at, account_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(post_url) DO UPDATE SET
             status = excluded.status,
             jev_label = excluded.jev_label,
-            jev_confidence = excluded.jev_confidence
+            jev_confidence = excluded.jev_confidence,
+            account_name = excluded.account_name
         """,
         (
             post["post_url"],
@@ -80,14 +91,15 @@ def save_post(db, post, status, label=None, confidence=None):
             label,
             confidence,
             datetime.now(timezone.utc).isoformat(),
+            account_name,
         ),
     )
     db.commit()
 
 
-def save_comment(db, post_url, comment, success):
+def save_comment(db, post_url, comment, success, account_name=""):
     db.execute(
-        "INSERT INTO comment_history (post_url, comment_text, success, commented_at) VALUES (?, ?, ?, ?)",
-        (post_url, comment, 1 if success else 0, datetime.now(timezone.utc).isoformat()),
+        "INSERT INTO comment_history (post_url, comment_text, success, commented_at, account_name) VALUES (?, ?, ?, ?, ?)",
+        (post_url, comment, 1 if success else 0, datetime.now(timezone.utc).isoformat(), account_name),
     )
     db.commit()

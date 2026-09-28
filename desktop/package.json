@@ -1,0 +1,16 @@
+{
+  "name": "fb-commenter-desktop",
+  "version": "1.0.0",
+  "description": "Facebook Fanpage Commenter - Desktop GUI",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "cross-env EXTERNAL_BACKEND=1 electron .",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  }
+}

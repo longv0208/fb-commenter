@@ -1,0 +1,40 @@
+<h1>Tài khoản</h1>
+<div class="row" style="align-items:flex-start">
+  <div class="card" style="flex:1.2">
+    <div class="toolbar">
+      <b>Danh sách</b><span class="spacer"></span>
+      <button class="btn btn-sm" id="btn-new">+ Thêm</button>
+    </div>
+    <table>
+      <thead><tr><th>Tên</th><th>Page ID</th><th>Proxy</th><th></th></tr></thead>
+      <tbody id="acc-list"></tbody>
+    </table>
+  </div>
+  <div class="card" style="flex:1">
+    <b id="form-title">Thêm tài khoản</b>
+    <form id="acc-form">
+      <label>Tên account</label>
+      <input type="text" name="name" required placeholder="vd: acc-01">
+      <label>Cookie Facebook (c_user + xs)</label>
+      <textarea name="cookie" placeholder="c_user=...; xs=..."></textarea>
+      <input type="file" id="cookie-file" accept=".txt,.json" style="margin-top:6px">
+      <label>Page ID (số)</label>
+      <input type="text" name="page_id" placeholder="123456789">
+      <label>Proxy</label>
+      <input type="text" name="proxy" placeholder="http://user:pass@host:port">
+      <label>Thư mục profile Chrome (trống = mặc định data/profiles/&lt;tên&gt;)</label>
+      <input type="text" name="profile_dir" placeholder="D:\profiles\acc-01">
+      <label>File comment list (trống = mặc định)</label>
+      <select name="comment_list"><option value="">— mặc định —</option></select>
+      <div class="checkbox-row">
+        <input type="checkbox" name="use_profile" id="use_profile">
+        <label for="use_profile" style="margin:0">Dùng persistent profile (giữ phiên đăng nhập)</label>
+      </div>
+      <div class="toolbar" style="margin-top:16px">
+        <button type="submit" class="btn btn-primary">Lưu</button>
+        <button type="button" class="btn btn-danger" id="btn-delete" hidden>Xóa</button>
+        <span class="muted" id="form-msg"></span>
+      </div>
+    </form>
+  </div>
+</div>

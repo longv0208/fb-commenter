@@ -105,3 +105,41 @@ Lịch sử nằm ở `tools/fb-commenter/data/app.db`. Bài đã gửi thành c
 ```powershell
 python -m pytest tests -q
 ```
+
+## Desktop GUI (Electron)
+
+Tool có giao diện desktop trong `desktop/` — Electron shell gọi backend Python
+qua HTTP/WebSocket (`127.0.0.1:8787`). Backend: `backend/server.py` (aiohttp).
+
+### Chạy dev
+
+```powershell
+# terminal 1: backend
+python -m backend.server --port 8787
+
+# terminal 2: electron (EXTERNAL_BACKEND=1 để không spawn backend mới)
+cd desktop
+npm install
+npm run dev     # hoặc: npm start (tự spawn backend)
+```
+
+### Đóng gói .exe
+
+```powershell
+# build backend -> backend-dist\server\server.exe (cần pyinstaller)
+powershell -File desktop\build-backend.ps1
+
+# build electron -> desktop\dist\
+cd desktop && npm run dist
+```
+
+### Tính năng GUI
+
+- Dashboard: danh sách account + trạng thái + start/stop nhanh.
+- Tài khoản: thêm/sửa/xóa (cookie, page id, proxy, profile dir persistent).
+- Chạy: chọn nhiều account, mode UID/Campaign, delay, headless, dry-run.
+- Logs: stream real-time theo account, lọc level, tìm kiếm, export `.log`.
+- Cài đặt: JEV API key, data root, delay mặc định.
+
+Mỗi account chạy song song mở 1 cửa sổ Chrome riêng (proxy + profile riêng).
+Cookie của account lưu trong `data/app.db` (plaintext — chỉ dùng local).

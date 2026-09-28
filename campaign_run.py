@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import random
@@ -11,6 +12,9 @@ from jev_client import JevError, review_post
 from post_rules import HELP_PHRASES, fold, hidden_author_ids, keyword_match
 
 logger = logging.getLogger("fb_commenter")
+
+# Account đang chạy campaign (set bởi run_campaign) để gắn vào DB rows.
+_current_account = ""
 
 
 def load_campaign(parent_dir, name):
@@ -207,7 +211,7 @@ async def scan_group(commenter, group_url, campaign, db, pool, commented_total, 
             if not keyword_match(item.get("text", ""), campaign["subjects"], campaign.get("help_phrases")):
                 skipped_keyword += 1
                 logger.info("Không khớp | %s", preview)
-                save_post(db, item, "filtered")
+                save_post(db, item, "filtered", account_name=_current_account)
                 continue
             logger.info("Khớp, comment ngay | %s", preview)
             if dry_run:
@@ -225,8 +229,8 @@ async def scan_group(commenter, group_url, campaign, db, pool, commented_total, 
                 continue
             group_comments += 1
             commented_total += 1
-            save_post(db, item, "commented")
-            save_comment(db, item["post_url"], comment, True)
+            save_post(db, item, "commented", account_name=_current_account)
+            save_comment(db, item["post_url"], comment, True, account_name=_current_account)
             if pause > 0 and commented_total < int(campaign["max_comments_per_run"]):
                 logger.info("Nghỉ %s giây", pause)
                 await commenter.page.wait_for_timeout(int(pause) * 1000)
@@ -266,18 +270,18 @@ def select_posts(posts, campaign, hidden_ids, page_id, db):
             continue
         if author and (author in hidden_ids or author == str(page_id)):
             hidden_count += 1
-            save_post(db, post, "hidden")
+            save_post(db, post, "hidden", account_name=_current_account)
             continue
         if story_already_commented(db, post.get("text")) or already_commented(db, post["post_url"]):
             phrases = campaign.get("help_phrases")
             if keyword_match(post.get("text", ""), campaign["subjects"], phrases):
                 logger.info("Khớp từ khóa nhưng đã comment: %s", post["post_url"])
-            save_post(db, post, "commented")
+            save_post(db, post, "commented", account_name=_current_account)
             continue
         matched = keyword_match(post.get("text", ""), campaign["subjects"], campaign.get("help_phrases"))
         if not matched and not campaign["jev_review_all"]:
             logger.info("Không khớp %s | %s", post["post_url"], preview)
-            save_post(db, post, "filtered")
+            save_post(db, post, "filtered", account_name=_current_account)
             continue
         logger.info("Khớp %s | %s", post["post_url"], preview)
         selected.append(post)
@@ -291,16 +295,18 @@ def apply_jev(posts, campaign, db):
             label, confidence = review_post(post.get("text", ""), campaign["subjects"])
         except JevError as error:
             logger.warning("Jev bỏ qua bài: %s", error)
-            save_post(db, post, "jev_failed")
+            save_post(db, post, "jev_failed", account_name=_current_account)
             continue
         passed = label == "comment" and confidence >= float(campaign["jev_confidence"])
-        save_post(db, post, "comment" if passed else "skip", label, confidence)
+        save_post(db, post, "comment" if passed else "skip", label, confidence, account_name=_current_account)
         if passed:
             ready.append(post)
     return ready
 
 
-async def run_campaign(commenter, parent_dir, name, dry_run, cooldown_seconds=None):
+async def run_campaign(commenter, parent_dir, name, dry_run, cooldown_seconds=None, account_name=""):
+    global _current_account
+    _current_account = account_name or ""
     campaign = load_campaign(parent_dir, name)
     hidden = hidden_author_ids(Path(parent_dir) / "account" / "hidden-authors.txt")
     db = connect(Path(__file__).resolve().parent / "data" / "app.db")
@@ -316,6 +322,8 @@ async def run_campaign(commenter, parent_dir, name, dry_run, cooldown_seconds=No
                 commented_total = await scan_group(
                     commenter, group_url, campaign, db, pool, commented_total, dry_run, pause
                 )
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.exception("Dừng group %s", group_url)
         logger.info("Xong. Đã comment %s bài", commented_total)

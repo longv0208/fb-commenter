@@ -196,9 +196,10 @@ def sanitize_error_text(value, secret="", max_length=400):
 
 
 class ChromeSession:
-    def __init__(self, headless, proxy):
+    def __init__(self, headless, proxy, user_data_dir=None):
         self.headless = headless
         self.proxy = proxy
+        self.user_data_dir = user_data_dir
         self._playwright = None
 
     async def __aenter__(self):
@@ -207,6 +208,11 @@ class ChromeSession:
         options = {"channel": "chrome", "headless": self.headless}
         if self.proxy:
             options["proxy"] = self.proxy
+        if self.user_data_dir:
+            Path(self.user_data_dir).mkdir(parents=True, exist_ok=True)
+            return await self._playwright.chromium.launch_persistent_context(
+                self.user_data_dir, **options
+            )
         return await self._playwright.chromium.launch(**options)
 
     async def __aexit__(self, exc_type, exc, tb):
@@ -215,9 +221,10 @@ class ChromeSession:
 
 
 class FacebookFanpageCommenter:
-    def __init__(self, urls, cookies_file, comment_file, page_id, access_token=None, proxy=None, delay_min=1, delay_max=60, num_threads=3, headless=True, comment_mode="ui", require_proxy=True):
+    def __init__(self, urls, cookies_file, comment_file, page_id, access_token=None, proxy=None, delay_min=1, delay_max=60, num_threads=3, headless=True, comment_mode="ui", require_proxy=True, user_data_dir=None, cookies_text=None, account_name=None):
         self.urls = self.parse_urls(urls)
         self.cookies_file = Path(cookies_file)
+        self.cookies_text = cookies_text
         self.comment_file = Path(comment_file)
         self.page_id = str(page_id).strip() if page_id else ""
         self.proxy = proxy
@@ -226,6 +233,9 @@ class FacebookFanpageCommenter:
         self.delay_max = delay_max
         self.num_threads = num_threads
         self.headless = headless
+        self.user_data_dir = user_data_dir
+        self.account_name = account_name or "cli"
+        self.log = logging.LoggerAdapter(logger, {"account": self.account_name})
         self.comments = self.load_comments()
         self.page = self.context = self.browser = self._launcher = None
         self._page_ready = False
@@ -241,7 +251,7 @@ class FacebookFanpageCommenter:
             raise FileNotFoundError(f"File comment_list.txt không tồn tại: {self.comment_file}")
         with open(self.comment_file, "r", encoding="utf-8") as f:
             comments = [line.strip() for line in f if line.strip()]
-        logger.info(f"Đã tải {len(comments)} comment")
+        self.log.info(f"Đã tải {len(comments)} comment")
         return comments
 
     def load_uids(self):
@@ -255,13 +265,18 @@ class FacebookFanpageCommenter:
         ]
         if not post_ids:
             raise ValueError(f"File Post ID đang trống: {post_file}")
-        logger.info(f"Đã tải {len(post_ids)} Post ID")
+        self.log.info(f"Đã tải {len(post_ids)} Post ID")
         return post_ids
 
     def load_browser_cookies(self):
-        raw = self.cookies_file.read_text(encoding="utf-8-sig").strip()
-        if not raw:
-            raise ValueError(f"File cookie đang trống: {self.cookies_file}")
+        if self.cookies_text is not None:
+            raw = self.cookies_text.strip()
+            if not raw:
+                raise ValueError("Cookie trống")
+        else:
+            raw = self.cookies_file.read_text(encoding="utf-8-sig").strip()
+            if not raw:
+                raise ValueError(f"File cookie đang trống: {self.cookies_file}")
 
         if raw.startswith("["):
             cookies = json.loads(raw)
@@ -385,14 +400,24 @@ class FacebookFanpageCommenter:
 
     def _chrome_launcher(self):
         proxy = self.proxy_config() if self.require_proxy else None
-        return ChromeSession(headless=bool(self.headless), proxy=proxy)
+        return ChromeSession(
+            headless=bool(self.headless),
+            proxy=proxy,
+            user_data_dir=self.user_data_dir,
+        )
 
     async def login_with_cookie(self):
-        logger.info("Đang login bằng cookie (Chrome)...")
+        self.log.info("Đang login bằng cookie (Chrome)...")
         self._launcher = self._chrome_launcher()
         try:
-            self.browser = await self._launcher.__aenter__()
-            context = await self.browser.new_context()
+            launched = await self._launcher.__aenter__()
+            if self.user_data_dir:
+                # persistent context: the returned object IS the context
+                self.browser = None
+                context = launched
+            else:
+                self.browser = launched
+                context = await self.browser.new_context()
             self.context = context
             await context.add_cookies(self.load_browser_cookies())
             self.page = await context.new_page()
@@ -405,7 +430,7 @@ class FacebookFanpageCommenter:
                 raise RuntimeError(
                     "Cookie account không đăng nhập được; cần cookie còn hạn gồm c_user và xs"
                 )
-            logger.info("Đã mở Facebook")
+            self.log.info("Đã mở Facebook")
             return context
         except BaseException:
             await self.close_browser()
@@ -419,12 +444,12 @@ class FacebookFanpageCommenter:
             try:
                 await context.close()
             except BaseException as error:
-                logger.debug("Context cleanup failed: %s", type(error).__name__)
+                self.log.debug("Context cleanup failed: %s", type(error).__name__)
         if launcher:
             try:
                 await launcher.__aexit__(None, None, None)
             except BaseException as error:
-                logger.debug("InvisiblePlaywright cleanup failed: %s", type(error).__name__)
+                self.log.debug("InvisiblePlaywright cleanup failed: %s", type(error).__name__)
 
     async def _switch_to_page(self):
         if not re.fullmatch(r"[0-9]+", self.page_id or ""):
@@ -462,7 +487,7 @@ class FacebookFanpageCommenter:
 
     async def _post_comment_ui(self, post_id, comment_text):
         if not self.page:
-            logger.warning("Bỏ qua comment: thiếu phiên Facebook")
+            self.log.warning("Bỏ qua comment: thiếu phiên Facebook")
             return False
         try:
             target = self.ui_target_url(post_id)
@@ -477,21 +502,21 @@ class FacebookFanpageCommenter:
             except Exception:
                 self.last_comment_locked = await self._comments_locked()
                 if self.last_comment_locked:
-                    logger.warning("Bài đã khóa comment")
+                    self.log.warning("Bài đã khóa comment")
                 else:
-                    logger.warning("Không thấy ô comment trên bài viết")
+                    self.log.warning("Không thấy ô comment trên bài viết")
                 return False
             await composer.scroll_into_view_if_needed()
             await self._set_comment_text(composer, comment_text)
             await composer.press("Enter")
             posted = self.page.get_by_text(comment_text, exact=True)
             if not await posted.count():
-                logger.warning("Không xác nhận được comment đã hiện trên bài")
+                self.log.warning("Không xác nhận được comment đã hiện trên bài")
                 return False
-            logger.info("Comment UI thành công")
+            self.log.info("Comment UI thành công")
             return True
         except (ValueError, RuntimeError) as error:
-            logger.warning("Comment UI không thực hiện được: %s", error)
+            self.log.warning("Comment UI không thực hiện được: %s", error)
             return False
 
     async def _comments_locked(self):
@@ -531,7 +556,7 @@ class FacebookFanpageCommenter:
         try:
             await card.wait_for(state="attached", timeout=5000)
         except Exception:
-            logger.warning("Không còn thấy khung bài trên màn hình")
+            self.log.warning("Không còn thấy khung bài trên màn hình")
             return False
         composer = card.locator(
             '[contenteditable="true"][aria-label*="Bình luận"], '
@@ -543,7 +568,7 @@ class FacebookFanpageCommenter:
                 await button.first.click()
                 await self.page.wait_for_timeout(500)
         if not await composer.count():
-            logger.warning("Không thấy ô comment trong khung bài")
+            self.log.warning("Không thấy ô comment trong khung bài")
             return False
         try:
             await composer.first.scroll_into_view_if_needed()
@@ -551,12 +576,12 @@ class FacebookFanpageCommenter:
             await composer.first.press("Enter")
             posted = card.get_by_text(comment_text, exact=True)
             if not await posted.count():
-                logger.warning("Không xác nhận được comment đã hiện trong khung bài")
+                self.log.warning("Không xác nhận được comment đã hiện trong khung bài")
                 return False
-            logger.info("Đã comment ngay trên bài đang hiện")
+            self.log.info("Đã comment ngay trên bài đang hiện")
             return True
         except (ValueError, RuntimeError) as error:
-            logger.warning("Comment ngay trên bài không thực hiện được: %s", error)
+            self.log.warning("Comment ngay trên bài không thực hiện được: %s", error)
             return False
 
     async def post_comment(self, post_id, comment_text):
@@ -567,38 +592,38 @@ class FacebookFanpageCommenter:
         post_ids = self.urls or self.load_uids()
 
         if not self.comments:
-            logger.warning("Không có comment nào")
+            self.log.warning("Không có comment nào")
             return
         if not post_ids:
-            logger.warning("Không có Post ID nào")
+            self.log.warning("Không có Post ID nào")
             return
 
         pool = list(dict.fromkeys(self.comments))
         for index, post_id in enumerate(post_ids):
             if not pool:
-                logger.warning("Hết comment chưa dùng")
+                self.log.warning("Hết comment chưa dùng")
                 return
             comment = random.choice(pool)
             pool.remove(comment)
             try:
                 target = self.ui_target_url(post_id)
             except ValueError as error:
-                logger.warning("Bỏ qua target không hợp lệ: %s", error)
+                self.log.warning("Bỏ qua target không hợp lệ: %s", error)
                 continue
-            logger.info("Đang comment trên %s", target)
+            self.log.info("Đang comment trên %s", target)
             success = await self.post_comment(post_id, comment)
             if not success:
-                logger.warning("Comment không hiện trên %s", post_id)
+                self.log.warning("Comment không hiện trên %s", post_id)
                 continue
             self.comments.remove(comment)
             if index == len(post_ids) - 1 or self.delay_max <= 0:
                 continue
             delay = random.randint(self.delay_min * 60, self.delay_max * 60)
-            logger.info("Đang delay %s phút...", delay // 60)
+            self.log.info("Đang delay %s phút...", delay // 60)
             try:
                 await asyncio.sleep(delay)
             except asyncio.CancelledError:
-                logger.info("Stopped by user")
+                self.log.info("Stopped by user")
                 raise
 
     async def comment_posts(self, jobs, cooldown_seconds=0):
@@ -608,7 +633,7 @@ class FacebookFanpageCommenter:
             try:
                 target = self.ui_target_url(job.post_url)
             except ValueError as error:
-                logger.warning("Bỏ qua target không hợp lệ: %s", error)
+                self.log.warning("Bỏ qua target không hợp lệ: %s", error)
                 job.success = False
                 continue
             await self.page.goto(target, wait_until="domcontentloaded", timeout=60000)
@@ -616,22 +641,22 @@ class FacebookFanpageCommenter:
             match = re.search(r"/(?:posts|permalink)/([^/?#]+)", self.page.url)
             post_key = match.group(1) if match else ""
             if post_key and post_key in commented_posts:
-                logger.info("Bỏ qua, link này mở lại bài đã comment: %s", post_key)
+                self.log.info("Bỏ qua, link này mở lại bài đã comment: %s", post_key)
                 job.success = False
                 job.duplicate = True
                 continue
             if post_key:
                 job.post_url = self.page.url.split("?")[0]
-            logger.info("Đang comment trên %s", job.post_url)
+            self.log.info("Đang comment trên %s", job.post_url)
             job.success = await self.post_comment(job.post_url, job.comment)
             job.locked = self.last_comment_locked
             if post_key and job.success:
                 commented_posts.add(post_key)
             if not job.success:
-                logger.warning("Comment không hiện trên %s", job.post_url)
+                self.log.warning("Comment không hiện trên %s", job.post_url)
                 continue
             if cooldown_seconds > 0 and index < len(jobs) - 1:
-                logger.info("Nghỉ %s giây", cooldown_seconds)
+                self.log.info("Nghỉ %s giây", cooldown_seconds)
                 await asyncio.sleep(cooldown_seconds)
         return jobs
 
@@ -646,4 +671,4 @@ class FacebookFanpageCommenter:
             await self.comment_random()
         finally:
             await self.close_browser()
-            logger.info("Finished")
+            self.log.info("Finished")

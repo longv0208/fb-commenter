@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# data & secrets (local only)
+data/
+cookies.txt
+*.log
+
+# electron
+desktop/node_modules/
+desktop/dist/
+
+# build artifacts
+backend-dist/
+build/
+*.spec
+
+# env
+.env
+.venv/
+venv/

@@ -1,0 +1,23 @@
+<h1>Dashboard</h1>
+<div class="card">
+  <div class="toolbar">
+    <button class="btn btn-primary" id="btn-start-selected">Chạy đã chọn</button>
+    <button class="btn btn-danger" id="btn-stop-all">Dừng tất cả</button>
+    <span class="spacer"></span>
+    <span class="muted" id="dashboard-summary"></span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th><input type="checkbox" id="check-all"></th>
+        <th>Tài khoản</th>
+        <th>Page ID</th>
+        <th>Proxy</th>
+        <th>Trạng thái</th>
+        <th>Lỗi</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="account-rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody>
+  </table>
+</div>
