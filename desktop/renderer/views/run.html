@@ -1,0 +1,45 @@
+<h1>Chạy chiến dịch</h1>
+<div class="row" style="align-items:flex-start">
+  <div class="card" style="flex:1">
+    <b>Chọn tài khoản</b>
+    <div class="account-checklist" id="run-accounts" style="margin-top:10px"></div>
+  </div>
+  <div class="card" style="flex:1.4">
+    <b>Cấu hình chạy</b>
+    <div class="checkbox-row" style="margin-top:10px">
+      <input type="radio" name="mode" value="uid" id="mode-uid" checked>
+      <label for="mode-uid" style="margin:0">Comment theo UID list</label>
+      <input type="radio" name="mode" value="campaign" id="mode-campaign" style="margin-left:16px">
+      <label for="mode-campaign" style="margin:0">Quét group (campaign)</label>
+    </div>
+    <div id="campaign-picker" hidden>
+      <label>Campaign</label>
+      <select id="campaign-select"></select>
+    </div>
+    <div id="urls-row">
+      <label>UID/URL bài viết (phẩy cách — trống = đọc list UID/UID.txt)</label>
+      <input type="text" id="opt-urls" placeholder="123456, 789012">
+    </div>
+    <div class="row">
+      <div><label>Delay min (phút)</label><input type="number" id="opt-delay-min" value="1" min="0"></div>
+      <div><label>Delay max (phút)</label><input type="number" id="opt-delay-max" value="60" min="0"></div>
+    </div>
+    <label id="cooldown-row" hidden>Cooldown giữa 2 comment campaign (giây, trống = mặc định)</label>
+    <input type="number" id="opt-cooldown" min="0" hidden>
+    <div class="checkbox-row">
+      <input type="checkbox" id="opt-headless"><label for="opt-headless" style="margin:0">Headless (không hiện Chrome)</label>
+      <input type="checkbox" id="opt-dry-run" style="margin-left:16px"><label for="opt-dry-run" style="margin:0">Dry-run (không gửi thật)</label>
+      <input type="checkbox" id="opt-no-proxy" style="margin-left:16px"><label for="opt-no-proxy" style="margin:0">Không proxy</label>
+    </div>
+    <div class="toolbar" style="margin-top:18px">
+      <button class="btn btn-primary" id="btn-run-start">Bắt đầu</button>
+      <button class="btn btn-danger" id="btn-run-stop">Dừng đã chọn</button>
+      <span class="muted" id="run-msg"></span>
+    </div>
+  </div>
+</div>
+<div class="card">
+  <b>Trạng thái đang chạy</b>
+  <table><thead><tr><th>Account</th><th>Mode</th><th>Trạng thái</th><th>Lỗi</th></tr></thead>
+    <tbody id="run-status"></tbody></table>
+</div>

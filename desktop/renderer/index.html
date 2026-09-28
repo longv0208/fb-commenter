@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FB Commenter</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">FB Commenter</div>
+      <nav>
+        <a href="#/dashboard" data-route="dashboard">Dashboard</a>
+        <a href="#/accounts" data-route="accounts">Tài khoản</a>
+        <a href="#/run" data-route="run">Chạy</a>
+        <a href="#/logs" data-route="logs">Logs</a>
+        <a href="#/settings" data-route="settings">Cài đặt</a>
+      </nav>
+      <div class="sidebar-footer">
+        <span id="backend-status" class="badge badge-idle">backend…</span>
+      </div>
+    </aside>
+    <main id="view" class="view"><div class="loading">Đang tải…</div></main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

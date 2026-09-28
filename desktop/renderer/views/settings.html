@@ -1,0 +1,22 @@
+<h1>Cài đặt</h1>
+<div class="card" style="max-width:560px">
+  <b>Backend &amp; đường dẫn</b>
+  <label>JEV API key (dùng cho campaign use_jev)</label>
+  <input type="password" id="set-jev" placeholder="để trống nếu không dùng">
+  <label>Data root (mặc định: thư mục "tool cmt")</label>
+  <input type="text" id="set-data-root" placeholder="E:\Telegram Desktop\tool cmt">
+  <label>Delay mặc định min/max (phút)</label>
+  <div class="row">
+    <input type="number" id="set-delay-min" value="1" min="0">
+    <input type="number" id="set-delay-max" value="60" min="0">
+  </div>
+  <div class="toolbar" style="margin-top:16px">
+    <button class="btn btn-primary" id="set-save">Lưu</button>
+    <span class="muted" id="set-msg"></span>
+  </div>
+</div>
+<div class="card" style="max-width:560px">
+  <b>Về ứng dụng</b>
+  <p class="muted">FB Commenter Desktop — Electron + Python backend (aiohttp + Playwright).<br>
+  Backend: <code id="set-backend"></code></p>
+</div>
