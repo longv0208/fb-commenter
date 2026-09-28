@@ -173,6 +173,9 @@ async def scan_group(commenter, group_url, campaign, db, pool, commented_total, 
         await select_newest_posts(commenter.page)
     seen = []
     group_comments = 0
+    skipped_keyword = 0
+    skipped_done = 0
+    skipped_failed = 0
     empty_rounds = 0
     for _ in range(int(campaign["max_scrolls"])):
         if commented_total >= int(campaign["max_comments_per_run"]):
@@ -198,9 +201,11 @@ async def scan_group(commenter, group_url, campaign, db, pool, commented_total, 
             added += 1
             preview = " ".join((item.get("text") or "").split())[:120]
             if story_already_commented(db, item.get("text")) or already_commented(db, item["post_url"]):
+                skipped_done += 1
                 logger.info("Đã comment trước đó, bỏ qua | %s", preview)
                 continue
             if not keyword_match(item.get("text", ""), campaign["subjects"], campaign.get("help_phrases")):
+                skipped_keyword += 1
                 logger.info("Không khớp | %s", preview)
                 save_post(db, item, "filtered")
                 continue
@@ -215,6 +220,7 @@ async def scan_group(commenter, group_url, campaign, db, pool, commented_total, 
             pool.remove(comment)
             ok = await commenter.comment_on_card(item.get("card_id"), comment)
             if not ok:
+                skipped_failed += 1
                 logger.warning("Không comment được bài đang hiện")
                 continue
             group_comments += 1
@@ -230,8 +236,22 @@ async def scan_group(commenter, group_url, campaign, db, pool, commented_total, 
                 break
         else:
             empty_rounds = 0
-        await commenter.page.mouse.wheel(0, int(campaign["scroll_pixels"]))
+        ratio = float(campaign.get("scroll_ratio", 0.4))
+        await commenter.page.evaluate(
+            "(ratio) => window.scrollBy(0, Math.max(280, Math.round(window.innerHeight * ratio)))",
+            ratio,
+        )
         await commenter.page.wait_for_timeout(int(campaign["scroll_pause_ms"]))
+    skipped = skipped_keyword + skipped_done + skipped_failed
+    logger.info(
+        "Tổng kết: đọc %s bài, comment %s, bỏ qua %s (không khớp %s, đã comment %s, không gửi được %s)",
+        len(seen),
+        group_comments,
+        skipped,
+        skipped_keyword,
+        skipped_done,
+        skipped_failed,
+    )
     return commented_total
 
 

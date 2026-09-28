@@ -88,10 +88,13 @@ _GROUP_POST_SCRIPT = """
     if (!href) href = urlFrom(article.innerHTML || '');
     if (!href || seen.has(href) || !href.includes('/groups/' + groupSlug + '/')) continue;
     const box = article;
+    const story = box.querySelector('[data-ad-rendering-role="story_message"]');
+    const photo = box.querySelector('a[href*="set=gm."], a[href*="set=pcb."]');
+    if (!story && !photo) continue;
     const alts = Array.from(box.querySelectorAll('img'))
       .map((img) => (img.alt || '').trim())
       .filter((alt) => alt && !/^facebook$/i.test(alt));
-    const text = [messageText(box), ...alts].filter(Boolean).join('\\n').slice(0, 2000);
+    const text = (story ? (story.innerText || '').trim() : [messageText(box), ...alts].filter(Boolean).join('\\n')).slice(0, 2000);
     const images = Array.from(box.querySelectorAll('img'))
       .filter((img) => img.src && (img.naturalWidth || img.width || 0) > 40)
       .length;
