@@ -30,7 +30,7 @@ def keyword_match(text, subjects, phrases=None):
         return False
     for subject in subjects:
         token = fold(subject)
-        if token and re.search(rf"(?<![a-z0-9]){re.escape(token)}\d*(?![a-z])", folded):
+        if token and token in folded:
             return True
     chosen = HELP_PHRASES if phrases is None else phrases
     return any(fold(phrase) in folded for phrase in chosen)

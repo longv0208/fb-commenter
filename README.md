@@ -78,9 +78,9 @@ Các bước:
 2. Vào Page, bấm **Chuyển ngay**.
 3. Vào group. Feed mặc định là **Hoạt động mới đây**. Tool bấm dòng đó và chọn **Bài viết mới**.
 4. Lướt feed. Mỗi lần khoảng một màn hình, rồi chờ `scroll_pause_ms`. Dừng group khi đủ `max_scrolls`, hoặc khi `empty_scroll_limit` lần liên tiếp không thấy bài mới.
-5. Giữ bài có mã trong `subjects` hoặc cụm trong `help_phrases`. So khớp không phân biệt hoa thường và dấu. `MAD` cũng khớp `MAD101`.
+5. Bấm **Xem thêm** trên các bài đang hiện, rồi mới đọc chữ. Bài ngắn vẫn được đọc. Bài chỉ có ảnh được chụp và đọc chữ trên ảnh. Giữ bài có mã trong `subjects` hoặc cụm trong `help_phrases`. So khớp không phân biệt hoa thường và dấu. `MAD` cũng khớp `MAD101`.
 6. Bỏ bài không có chữ, bài của Page, bài của UID trong `hidden-authors.txt`, và bài đã comment thành công.
-7. Gửi một câu trong `comment list.txt`. Chỉ tính thành công khi đúng câu đó hiện trên bài.
+7. Gửi một câu trong `comment list.txt`. Chỉ tính thành công khi đúng câu đó hiện trên bài. Bài khóa comment được ghi nhớ và các lượt sau không mở lại.
 
 Với cấu hình hiện tại, mỗi group lướt tối đa 20 lần, mỗi lần chờ 1,5 giây. Phần lướt khoảng 30 giây nếu feed còn bài mới. Cả lượt còn cộng thời gian đăng nhập và chuyển Page.
 

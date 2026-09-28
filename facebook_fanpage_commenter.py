@@ -30,7 +30,7 @@ _GROUP_POST_SCRIPT = """
     const lines = [];
     for (const el of box.querySelectorAll('div[dir="auto"], span[dir="auto"]')) {
       const line = (el.innerText || '').replace(/\\s+/g, ' ').trim();
-      if (line.length < 12 || /^facebook$/i.test(line)) continue;
+      if (line.length < 2 || /^facebook$/i.test(line)) continue;
       if (lines.some((item) => item.includes(line) || line.includes(item))) continue;
       lines.push(line);
     }
@@ -41,37 +41,49 @@ _GROUP_POST_SCRIPT = """
   const seen = new Set();
   const groupMatch = location.pathname.match(/\\/groups\\/([^/]+)/);
   const groupSlug = groupMatch ? groupMatch[1] : '';
-  const anchors = document.querySelectorAll(
-    'a[href*="/posts/"], a[href*="/permalink/"], a[href*="pcb."], a[href*="story_fbid="], a[href*="multi_permalinks="]'
-  );
-  for (const anchor of anchors) {
+  const articles = document.querySelectorAll('[role="article"]');
+  const urlFrom = (html) => {
+    const marker = '/groups/';
+    let start = html.indexOf(marker);
+    while (start >= 0) {
+      const slice = html.slice(start, start + 220);
+      const end = slice.search(/["'\\s?#]/);
+      const path = (end > 0 ? slice.slice(0, end) : slice).replace(/&amp;/g, '&');
+      if (path.includes('/posts/')) return 'https://www.facebook.com' + path.split('?')[0];
+      start = html.indexOf(marker, start + marker.length);
+    }
+    const pfbid = html.match(/pfbid[0-9A-Za-z]+/);
+    if (pfbid && groupSlug) {
+      return 'https://www.facebook.com/groups/' + groupSlug + '/posts/' + pfbid[0];
+    }
+    return '';
+  };
+  for (const article of articles) {
     let href = '';
-    if (/\\/posts\\/|\\/permalink\\//.test(anchor.href) && anchor.href.includes('/groups/')) {
-      href = anchor.href.split('?')[0];
-    } else {
-      const id = anchor.href.match(/pcb\\.(\\d+)/)
-        || anchor.href.match(/multi_permalinks=(\\d+)/)
-        || anchor.href.match(/story_fbid=(\\d+)/);
+    for (const anchor of article.querySelectorAll('a[href], [role="link"]')) {
+      const raw = anchor.href || '';
+      const id = raw.match(/\\/(?:posts|permalink)\\/([^/?#]+)/)
+        || raw.match(/[?&](?:multi_permalinks|story_fbid)=([^&#]+)/)
+        || raw.match(/pcb\\.(\\d+)/);
       if (!id) continue;
+      const postId = decodeURIComponent(id[1]);
       href = groupSlug
-        ? 'https://www.facebook.com/groups/' + groupSlug + '/posts/' + id[1]
-        : 'https://www.facebook.com/' + id[1];
+        ? 'https://www.facebook.com/groups/' + groupSlug + '/posts/' + postId
+        : raw.split('?')[0];
+      break;
     }
-    if (!href || seen.has(href)) continue;
-    let box = anchor;
-    let bestLength = 0;
-    let node = anchor;
-    for (let i = 0; i < 14 && node.parentElement; i += 1) {
-      node = node.parentElement;
-      const length = (node.innerText || '').trim().length;
-      if (length > 3500) break;
-      if (length > bestLength) {
-        box = node;
-        bestLength = length;
-      }
-    }
-    const text = messageText(box);
-    if (text.length < 30) continue;
+    if (!href) href = urlFrom(article.innerHTML || '');
+    if (!href || seen.has(href) || !href.includes('/groups/' + groupSlug + '/')) continue;
+    const box = article;
+    const alts = Array.from(box.querySelectorAll('img'))
+      .map((img) => (img.alt || '').trim())
+      .filter((alt) => alt && !/^facebook$/i.test(alt));
+    const text = [messageText(box), ...alts].filter(Boolean).join('\\n').slice(0, 2000);
+    const images = Array.from(box.querySelectorAll('img'))
+      .filter((img) => img.src && (img.naturalWidth || img.width || 0) > 40)
+      .length;
+    if (text.length < 2 && images === 0) continue;
+    box.setAttribute('data-fb-post', href);
     seen.add(href);
     let authorId = '';
     for (const link of box.querySelectorAll('a[href]')) {
@@ -81,7 +93,26 @@ _GROUP_POST_SCRIPT = """
         break;
       }
     }
-    posts.push({ post_url: href, text: text.slice(0, 2000), author_id: authorId });
+    posts.push({ post_url: href, text: text, author_id: authorId, image_count: images });
+  }
+  for (const anchor of document.querySelectorAll('a[href*="set=gm."], a[href*="set=pcb."]')) {
+    const id = anchor.href.match(/set=(?:gm|pcb)\\.(\\d+)/);
+    if (!id || !groupSlug) continue;
+    const href = 'https://www.facebook.com/groups/' + groupSlug + '/posts/' + id[1];
+    if (seen.has(href)) continue;
+    seen.add(href);
+    let box = anchor;
+    let node = anchor;
+    for (let i = 0; i < 12 && node.parentElement; i += 1) {
+      const parent = node.parentElement;
+      if ((parent.innerText || '').length > 2500) break;
+      node = parent;
+      box = parent;
+    }
+    box.setAttribute('data-fb-post', href);
+    const text = messageText(box).slice(0, 2000);
+    const images = Array.from(box.querySelectorAll('img')).filter((img) => (img.naturalWidth || img.width || 0) > 40).length;
+    posts.push({ post_url: href, text: text, author_id: '', image_count: images });
   }
   return posts;
 }
@@ -146,6 +177,7 @@ class FacebookFanpageCommenter:
         self.comments = self.load_comments()
         self.page = self.context = self.browser = self._launcher = None
         self._page_ready = False
+        self.last_comment_locked = False
 
     def parse_urls(self, urls_str):
         if not urls_str:
@@ -359,9 +391,11 @@ class FacebookFanpageCommenter:
         if not await switch_now.count():
             raise RuntimeError("Không thấy nút chuyển sang Page")
         await switch_now.first.click()
-        try:
-            await switch_now.first.wait_for(state="hidden", timeout=8000)
-        except Exception:
+        for _ in range(16):
+            if not await switch_now.count():
+                break
+            await self.page.wait_for_timeout(500)
+        else:
             raise RuntimeError("Không xác nhận được danh tính Page")
         self._page_ready = True
 
@@ -387,9 +421,13 @@ class FacebookFanpageCommenter:
                 '[contenteditable="true"][aria-label*="comment" i]'
             ).locator("visible=true").first
             try:
-                await composer.wait_for(state="visible", timeout=20000)
+                await composer.wait_for(state="visible", timeout=8000)
             except Exception:
-                logger.warning("Không thấy ô comment trên bài viết")
+                self.last_comment_locked = await self._comments_locked()
+                if self.last_comment_locked:
+                    logger.warning("Bài đã khóa comment")
+                else:
+                    logger.warning("Không thấy ô comment trên bài viết")
                 return False
             await composer.scroll_into_view_if_needed()
             await self._set_comment_text(composer, comment_text)
@@ -404,7 +442,36 @@ class FacebookFanpageCommenter:
             logger.warning("Comment UI không thực hiện được: %s", error)
             return False
 
+    async def _comments_locked(self):
+        body = " ".join((await self.page.locator("body").inner_text()).split()).lower()
+        phrases = (
+            "bình luận bị tắt",
+            "đã tắt bình luận",
+            "tắt tính năng bình luận",
+            "commenting is turned off",
+            "comments are turned off",
+        )
+        return any(phrase in body for phrase in phrases)
+
+    async def expand_see_more(self):
+        if not self.page:
+            return 0
+        return await self.page.evaluate(
+            """() => {
+                let clicks = 0;
+                for (const el of document.querySelectorAll('[role="button"]')) {
+                    const text = (el.innerText || '').trim();
+                    if (text === 'Xem thêm' || text === 'See more') {
+                        el.click();
+                        clicks += 1;
+                    }
+                }
+                return clicks;
+            }"""
+        )
+
     async def post_comment(self, post_id, comment_text):
+        self.last_comment_locked = False
         return await self._post_comment_ui(post_id, comment_text)
 
     async def comment_random(self):
@@ -456,6 +523,7 @@ class FacebookFanpageCommenter:
                 continue
             logger.info("Đang comment trên %s", target)
             job.success = await self.post_comment(job.post_url, job.comment)
+            job.locked = self.last_comment_locked
             if not job.success:
                 logger.warning("Comment không hiện trên %s", job.post_url)
                 continue

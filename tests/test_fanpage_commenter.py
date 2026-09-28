@@ -158,12 +158,24 @@ class ScriptedLocator:
     def filter(self, has_text=None):
         return ScriptedLocator(self.page, "switch")
 
+    def locator(self, _selector):
+        return self
+
     async def wait_for(self, **kwargs):
         if not await self.count():
             raise RuntimeError("missing")
 
     async def scroll_into_view_if_needed(self):
         return None
+
+
+class ScriptedKeyboard:
+    def __init__(self, page):
+        self.page = page
+
+    async def insert_text(self, text):
+        self.page.events.append(f"write:{text}")
+        self.page.filled = f"{text}{text}" if self.page.double_write else text
 
 
 class ScriptedPage:
@@ -173,6 +185,7 @@ class ScriptedPage:
         self.filled = ""
         self.double_write = False
         self.counts = {"identity": 0, "switch": 1, "box": 1, "submit": 1, "posted": 1}
+        self.keyboard = ScriptedKeyboard(self)
 
     async def wait_for_timeout(self, _ms):
         return None

@@ -3,17 +3,32 @@ import json
 import pytest
 
 from campaign_run import load_campaign, select_posts
-from campaign_store import already_commented, connect, save_comment
+from campaign_store import already_commented, connect, save_comment, save_post
 from jev_client import JevError, review_post
 from post_rules import keyword_match
 
 
 def test_keyword_matches_subject_or_help_phrase():
+    assert keyword_match("CSD201 và TOOL cho MAS291", ["csd", "tool", "mas"])
     assert keyword_match("GIẢI QUYẾT NỖI LO CÁC MÔN TOÁN (MAE - MAD - MAS)", ["MAD"])
     assert keyword_match("Có ai file PE CSD201 không", ["CSD201"])
     assert keyword_match("Mình cần tài liệu ạ", [])
     assert keyword_match("pass rồi nhưng vẫn cần tài liệu", ["CSD201"])
     assert not keyword_match("hôm nay trời đẹp", ["CSD201"])
+
+
+def test_locked_comment_post_is_not_selected_again(tmp_path):
+    db = connect(tmp_path / "app.db")
+    url = "https://www.facebook.com/groups/a/posts/9"
+    save_post(db, {"post_url": url, "text": "MAD"}, "comments_locked")
+    selected, _hidden = select_posts(
+        [{"post_url": url, "author_id": "", "text": "MAD 101"}],
+        {"subjects": ["MAD"], "help_phrases": [], "jev_review_all": False},
+        set(),
+        "1",
+        db,
+    )
+    assert selected == []
 
 
 def test_hidden_author_and_previous_comment_are_skipped(tmp_path):

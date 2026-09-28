@@ -35,6 +35,11 @@ def connect(path):
     return db
 
 
+def post_status(db, post_url):
+    row = db.execute("SELECT status FROM posts WHERE post_url = ?", (post_url,)).fetchone()
+    return row["status"] if row else ""
+
+
 def already_commented(db, post_url):
     row = db.execute(
         "SELECT 1 FROM comment_history WHERE post_url = ? AND success = 1",

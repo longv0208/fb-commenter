@@ -4,7 +4,8 @@ import random
 import re
 from pathlib import Path
 
-from campaign_store import already_commented, connect, save_comment, save_post
+from campaign_store import already_commented, connect, post_status, save_comment, save_post
+from image_text import read_png
 from comment_job import CommentJob
 from jev_client import JevError, review_post
 from post_rules import HELP_PHRASES, hidden_author_ids, keyword_match
@@ -22,6 +23,7 @@ def load_campaign(parent_dir, name):
     data.setdefault("subjects", [])
     data.setdefault("help_phrases", list(HELP_PHRASES))
     data.setdefault("use_jev", False)
+    data.setdefault("sort_newest", False)
     data.setdefault("max_scrolls", 30)
     data.setdefault("empty_scroll_limit", 4)
     data.setdefault("scroll_pixels", 700)
@@ -45,32 +47,47 @@ _NEWEST_HINT = re.compile(
 )
 
 
+_SORT_LABELS = (
+    "Phù hợp nhất",
+    "Hoạt động mới đây",
+    "Bài viết mới",
+    "Most relevant",
+    "Recent activity",
+    "New posts",
+)
+
+
 async def select_newest_posts(page):
-    """Group feed opens on Recent activity. Open that menu and choose newest posts."""
-    opened = False
-    for _ in range(15):
-        opened = await page.evaluate(
-            """() => {
-                const button = document.querySelector(
-                    "[role='button'][aria-label*='sắp xếp bảng feed'], [role='button'][aria-label*='Sort group feed']"
-                );
-                if (!button) return false;
-                button.click();
-                return true;
-            }"""
+    """Open whichever feed sort is showing, then choose newest posts."""
+    if page.is_closed():
+        raise RuntimeError("Chrome đã đóng trước khi chọn Bài viết mới")
+    trigger = page.locator(
+        "[role='button'][aria-label*='sắp xếp bảng feed'], [role='button'][aria-label*='Sort group feed']"
+    )
+    label = ""
+    if await trigger.count():
+        label = ((await trigger.first.inner_text()) or (await trigger.first.get_attribute("aria-label") or "")).strip()
+    else:
+        for name in _SORT_LABELS:
+            candidate = page.get_by_text(name, exact=True)
+            if await candidate.count():
+                trigger = candidate
+                label = name
+                break
+    if not label:
+        raise RuntimeError(
+            "Không thấy bộ lọc feed. Cần một trong các nhãn: Phù hợp nhất, Hoạt động mới đây, Bài viết mới. "
+            f"Trang: {page.url}"
         )
-        if opened:
-            break
-        await page.wait_for_timeout(400)
-    if not opened:
-        trigger = page.get_by_text("Hoạt động mới đây", exact=True)
-        if not await trigger.count():
-            trigger = page.get_by_text("Recent activity", exact=True)
-        if not await trigger.count():
-            raise RuntimeError("Không thấy bộ lọc Hoạt động mới đây")
-        await trigger.first.click()
-    await page.wait_for_timeout(400)
-    choice = page.get_by_text("Bài viết mới", exact=True)
+    logger.info("Bộ lọc feed đang hiện: %s", label.split("\n")[0][:80])
+    if re.search(r"Bài viết mới|New posts", label, re.I):
+        logger.info("Feed đã ở Bài viết mới")
+        return
+    await trigger.first.click()
+    await page.wait_for_timeout(700)
+    choice = page.get_by_text("Hiển thị bài viết gần đây đầu tiên", exact=True)
+    if not await choice.count():
+        choice = page.get_by_text("Bài viết mới", exact=True)
     if not await choice.count():
         choice = page.get_by_text("New posts", exact=True)
     if not await choice.count():
@@ -78,19 +95,87 @@ async def select_newest_posts(page):
             has_text=_NEWEST_HINT
         )
     if not await choice.count():
-        raise RuntimeError("Không thấy lựa chọn Bài viết mới")
+        visible = await page.evaluate(
+            """() => Array.from(document.querySelectorAll('[role="menuitem"], [role="dialog"] [role="button"]'))
+                .map((el) => (el.innerText || '').trim())
+                .filter((text) => text && text.length < 80)
+                .slice(0, 8)"""
+        )
+        raise RuntimeError(
+            f"Không thấy lựa chọn Bài viết mới. Bộ lọc đang là {state['label']!r}. "
+            f"Menu đang hiện: {visible}. Trang: {page.url}"
+        )
     await choice.first.click()
     await page.wait_for_timeout(700)
     logger.info("Đã chọn lọc Bài viết mới")
 
 
+async def read_post_images(page, post):
+    text = post.get("text") or ""
+    if not post.get("image_count"):
+        return text
+    locator = page.locator(f'[data-fb-post="{post["post_url"]}"] img')
+    count = min(await locator.count(), 5)
+    lines = [text] if text else []
+    for index in range(count):
+        try:
+            png = await locator.nth(index).screenshot(timeout=3000)
+        except Exception:
+            continue
+        found = await read_png(png)
+        if found:
+            lines.append(found)
+    return "\n".join(lines)[:2000]
+
+
+async def open_group(page, group_url):
+    """Move from the Page screen to the group. A direct goto is often aborted after the Page switch."""
+    await page.wait_for_timeout(2000)
+    await page.evaluate("(url) => { window.location.assign(url); }", group_url)
+    try:
+        await page.wait_for_url("**/groups/**", timeout=30000)
+    except Exception:
+        current = page.url
+        raise RuntimeError(f"Không vào được group, trang hiện tại là {current}") from None
+    await page.wait_for_timeout(1500)
+    for _ in range(10):
+        if page.is_closed():
+            raise RuntimeError("Chrome đã đóng sau khi vào group, trước khi chọn bộ lọc")
+        ready = await page.evaluate(
+            """() => {
+                const text = document.body.innerText || '';
+                return ['Phù hợp nhất', 'Hoạt động mới đây', 'Bài viết mới', 'Most relevant', 'Recent activity', 'New posts']
+                    .some((label) => text.includes(label));
+            }"""
+        )
+        if ready:
+            return
+        await page.wait_for_timeout(500)
+    logger.info("Chưa thấy nhãn bộ lọc sau khi vào group %s", page.url)
+
+
 async def scan_group(commenter, group_url, campaign):
-    await commenter.page.goto(group_url, wait_until="domcontentloaded", timeout=60000)
-    await select_newest_posts(commenter.page)
+    await open_group(commenter.page, group_url)
+    await commenter.page.wait_for_timeout(3000)
+    if campaign.get("sort_newest"):
+        await select_newest_posts(commenter.page)
     found = {}
     empty_rounds = 0
     for _ in range(int(campaign["max_scrolls"])):
+        await commenter.expand_see_more()
+        await commenter.page.wait_for_timeout(400)
         batch = await commenter.collect_group_posts()
+        logger.info("Màn này đọc được %s bài", len(batch))
+        if not batch and empty_rounds == 0:
+            sample = await commenter.page.evaluate(
+                """() => ({
+                    articles: document.querySelectorAll('[role="article"]').length,
+                    hrefs: Array.from(document.querySelectorAll('[role="article"] a[href]'))
+                        .map((el) => el.href.split('?')[0])
+                        .slice(0, 5)
+                })"""
+            )
+            logger.info("Chưa đọc được bài. Khung bài viết: %s. Link thấy: %s", sample["articles"], sample["hrefs"])
         added = 0
         for item in batch:
             url = (item.get("post_url") or "").split("?")[0]
@@ -98,6 +183,8 @@ async def scan_group(commenter, group_url, campaign):
                 continue
             item["post_url"] = url
             item["group_url"] = group_url
+            if not keyword_match(item.get("text", ""), campaign["subjects"], campaign["help_phrases"]):
+                item["text"] = await read_post_images(commenter.page, item)
             found[url] = item
             added += 1
         if added == 0:
@@ -116,19 +203,26 @@ def select_posts(posts, campaign, hidden_ids, page_id, db):
     hidden_count = 0
     for post in posts:
         author = str(post.get("author_id") or "")
+        preview = " ".join((post.get("text") or "").split())[:120]
+        if post_status(db, post["post_url"]) == "comments_locked":
+            logger.info("Bỏ qua bài khóa comment: %s", post["post_url"])
+            continue
         if author and (author in hidden_ids or author == str(page_id)):
             hidden_count += 1
             save_post(db, post, "hidden")
             continue
         if already_commented(db, post["post_url"]):
-            if keyword_match(post.get("text", ""), campaign["subjects"], campaign["help_phrases"]):
+            phrases = campaign.get("help_phrases")
+            if keyword_match(post.get("text", ""), campaign["subjects"], phrases):
                 logger.info("Khớp từ khóa nhưng đã comment: %s", post["post_url"])
             save_post(db, post, "commented")
             continue
-        matched = keyword_match(post.get("text", ""), campaign["subjects"], campaign["help_phrases"])
+        matched = keyword_match(post.get("text", ""), campaign["subjects"], campaign.get("help_phrases"))
         if not matched and not campaign["jev_review_all"]:
+            logger.info("Không khớp %s | %s", post["post_url"], preview)
             save_post(db, post, "filtered")
             continue
+        logger.info("Khớp %s | %s", post["post_url"], preview)
         selected.append(post)
     return selected, hidden_count
 
@@ -149,7 +243,7 @@ def apply_jev(posts, campaign, db):
     return ready
 
 
-async def run_campaign(commenter, parent_dir, name, dry_run):
+async def run_campaign(commenter, parent_dir, name, dry_run, cooldown_seconds=None):
     campaign = load_campaign(parent_dir, name)
     hidden = hidden_author_ids(Path(parent_dir) / "account" / "hidden-authors.txt")
     db = connect(Path(__file__).resolve().parent / "data" / "app.db")
@@ -161,8 +255,8 @@ async def run_campaign(commenter, parent_dir, name, dry_run):
         for group_url in campaign["groups"]:
             try:
                 scanned.extend(await scan_group(commenter, group_url, campaign))
-            except Exception as error:
-                logger.warning("Bỏ qua group %s: %s", group_url, error)
+            except Exception:
+                logger.exception("Dừng group %s", group_url)
         candidates, hidden_count = select_posts(
             scanned, campaign, hidden, commenter.page_id, db
         )
@@ -193,8 +287,11 @@ async def run_campaign(commenter, parent_dir, name, dry_run):
             pool.remove(comment)
             jobs.append(CommentJob(post["post_url"], comment, name))
             per_group[group] = per_group.get(group, 0) + 1
-        await commenter.comment_posts(jobs, cooldown_seconds=int(campaign["cooldown_seconds"]))
+        pause = campaign["cooldown_seconds"] if cooldown_seconds is None else cooldown_seconds
+        await commenter.comment_posts(jobs, cooldown_seconds=int(pause))
         for job in jobs:
+            if getattr(job, "locked", False):
+                save_post(db, {"post_url": job.post_url, "text": job.comment}, "comments_locked")
             save_comment(db, job.post_url, job.comment, job.success)
     finally:
         db.close()
