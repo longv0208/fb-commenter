@@ -3,6 +3,7 @@ import asyncio
 import logging
 from pathlib import Path
 
+from backend.file_logs import attach as attach_file_log, detach as detach_file_log
 from facebook_fanpage_commenter import FacebookFanpageCommenter
 from campaign_run import run_campaign
 
@@ -23,7 +24,9 @@ class AccountRunner:
         self.task = None
         self._commenter = None
         self._cookie_tmp = None
-        self.log = log or logging.getLogger("fb_commenter")
+        base = log or logging.getLogger("fb_commenter")
+        # LoggerAdapter gắn `account` để LogBus route log lỗi runner về đúng tab.
+        self.log = logging.LoggerAdapter(base, {"account": self.name})
 
     async def start(self):
         if self.task and not self.task.done():
@@ -86,6 +89,7 @@ class AccountRunner:
         return self._commenter
 
     async def _run(self):
+        attach_file_log(self.name)
         try:
             commenter = self._build_commenter()
             self.status = "running"
@@ -110,3 +114,4 @@ class AccountRunner:
             self.log.exception("Run %s failed", self.name)
         finally:
             self._commenter = None
+            detach_file_log(self.name)

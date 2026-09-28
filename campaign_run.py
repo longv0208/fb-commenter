@@ -17,6 +17,11 @@ logger = logging.getLogger("fb_commenter")
 _current_account = ""
 
 
+def _log_for(account):
+    """LoggerAdapter gắn field `account` cho LogBus route về đúng tab account."""
+    return logging.LoggerAdapter(logger, {"account": account or ""})
+
+
 def load_campaign(parent_dir, name):
     path = Path(parent_dir) / "account" / "campaigns" / f"{name}.json"
     if not path.is_file():
@@ -61,7 +66,8 @@ _SORT_LABELS = (
 )
 
 
-async def select_newest_posts(page):
+async def select_newest_posts(page, log=None):
+    log = log or logger
     """Open whichever feed sort is showing, then choose newest posts."""
     if page.is_closed():
         raise RuntimeError("Chrome đã đóng trước khi chọn Bài viết mới")
@@ -83,9 +89,9 @@ async def select_newest_posts(page):
             "Không thấy bộ lọc feed. Cần một trong các nhãn: Phù hợp nhất, Hoạt động mới đây, Bài viết mới. "
             f"Trang: {page.url}"
         )
-    logger.info("Bộ lọc feed đang hiện: %s", label.split("\n")[0][:80])
+    log.info("Bộ lọc feed đang hiện: %s", label.split("\n")[0][:80])
     if re.search(r"Bài viết mới|New posts", label, re.I):
-        logger.info("Feed đã ở Bài viết mới")
+        log.info("Feed đã ở Bài viết mới")
         return
     await trigger.first.click()
     await page.wait_for_timeout(700)
@@ -111,7 +117,7 @@ async def select_newest_posts(page):
         )
     await choice.first.click()
     await page.wait_for_timeout(700)
-    logger.info("Đã chọn lọc Bài viết mới")
+    log.info("Đã chọn lọc Bài viết mới")
 
 
 async def read_post_images(page, post):
@@ -132,8 +138,9 @@ async def read_post_images(page, post):
     return "\n".join(lines)[:2000]
 
 
-async def open_group(page, group_url):
+async def open_group(page, group_url, log=None):
     """Move from the Page screen to the group. A direct goto is often aborted after the Page switch."""
+    log = log or logger
     await page.wait_for_timeout(2000)
     await page.evaluate("(url) => { window.location.assign(url); }", group_url)
     try:
@@ -155,7 +162,7 @@ async def open_group(page, group_url):
         if ready:
             return
         await page.wait_for_timeout(500)
-    logger.info("Chưa thấy nhãn bộ lọc sau khi vào group %s", page.url)
+    log.info("Chưa thấy nhãn bộ lọc sau khi vào group %s", page.url)
 
 
 def same_post(existing, item):
@@ -169,29 +176,33 @@ def same_post(existing, item):
     return len(old) >= 30 and len(new) >= 30 and (old in new or new in old)
 
 
-async def scan_group(commenter, group_url, campaign, db, pool, commented_total, dry_run, pause):
+async def scan_group(commenter, group_url, campaign, db, pool, commented_total, dry_run, pause, log=None):
     """Scroll the feed and comment on a matching card before leaving it."""
-    await open_group(commenter.page, group_url)
+    log = log or logger
+    log.info("▶ Vào group %s", group_url)
+    await open_group(commenter.page, group_url, log=log)
     await commenter.page.wait_for_timeout(3000)
     if campaign.get("sort_newest"):
-        await select_newest_posts(commenter.page)
+        await select_newest_posts(commenter.page, log=log)
     seen = []
     group_comments = 0
     skipped_keyword = 0
     skipped_done = 0
     skipped_failed = 0
+    skipped_empty = 0
+    skipped_duplicate = 0
     empty_rounds = 0
     for _ in range(int(campaign["max_scrolls"])):
         if commented_total >= int(campaign["max_comments_per_run"]):
-            logger.info("Đủ %s comment cho lượt này", campaign["max_comments_per_run"])
+            log.info("Đủ %s comment cho lượt này", campaign["max_comments_per_run"])
             break
         if group_comments >= int(campaign["max_comments_per_group"]):
-            logger.info("Đủ %s comment cho group này", campaign["max_comments_per_group"])
+            log.info("Đủ %s comment cho group này", campaign["max_comments_per_group"])
             break
         await commenter.expand_see_more()
         await commenter.page.wait_for_timeout(400)
         batch = await commenter.collect_group_posts()
-        logger.info("Màn này đọc được %s bài", len(batch))
+        log.info("Màn này đọc được %s bài", len(batch))
         added = 0
         for item in batch:
             raw_url = item.get("post_url") or ""
@@ -206,14 +217,14 @@ async def scan_group(commenter, group_url, campaign, db, pool, commented_total, 
             preview = " ".join((item.get("text") or "").split())[:120]
             if story_already_commented(db, item.get("text")) or already_commented(db, item["post_url"]):
                 skipped_done += 1
-                logger.info("Đã comment trước đó, bỏ qua | %s", preview)
+                log.info("Đã comment trước đó, bỏ qua | %s", preview)
                 continue
             if not keyword_match(item.get("text", ""), campaign["subjects"], campaign.get("help_phrases")):
                 skipped_keyword += 1
-                logger.info("Không khớp | %s", preview)
+                log.info("Không khớp | %s", preview)
                 save_post(db, item, "filtered", account_name=_current_account)
                 continue
-            logger.info("Khớp, comment ngay | %s", preview)
+            log.info("Khớp, comment ngay | %s", preview)
             if dry_run:
                 continue
             if not pool or group_comments >= int(campaign["max_comments_per_group"]):
@@ -222,17 +233,28 @@ async def scan_group(commenter, group_url, campaign, db, pool, commented_total, 
                 break
             comment = random.choice(pool)
             pool.remove(comment)
+            # thử comment ngay trong feed card trước (nhanh); fail thì mở post detail
             ok = await commenter.comment_on_card(item.get("card_id"), comment)
+            if not ok and item.get("post_url"):
+                log.info("Thử lại bằng cách mở post detail %s", item["post_url"])
+                ok = await commenter.post_comment(item["post_url"], comment)
+                if ok:
+                    # quay lại group feed để tiếp tục scroll
+                    try:
+                        await commenter.page.go_back(wait_until="domcontentloaded", timeout=20000)
+                        await commenter.page.wait_for_timeout(1500)
+                    except Exception:
+                        pass
             if not ok:
                 skipped_failed += 1
-                logger.warning("Không comment được bài đang hiện")
+                log.warning("Không comment được bài đang hiện")
                 continue
             group_comments += 1
             commented_total += 1
             save_post(db, item, "commented", account_name=_current_account)
             save_comment(db, item["post_url"], comment, True, account_name=_current_account)
             if pause > 0 and commented_total < int(campaign["max_comments_per_run"]):
-                logger.info("Nghỉ %s giây", pause)
+                log.info("Nghỉ %s giây", pause)
                 await commenter.page.wait_for_timeout(int(pause) * 1000)
         if added == 0:
             empty_rounds += 1
@@ -247,7 +269,7 @@ async def scan_group(commenter, group_url, campaign, db, pool, commented_total, 
         )
         await commenter.page.wait_for_timeout(int(campaign["scroll_pause_ms"]))
     skipped = skipped_keyword + skipped_done + skipped_failed
-    logger.info(
+    log.info(
         "Tổng kết: đọc %s bài, comment %s, bỏ qua %s (không khớp %s, đã comment %s, không gửi được %s)",
         len(seen),
         group_comments,
@@ -259,14 +281,15 @@ async def scan_group(commenter, group_url, campaign, db, pool, commented_total, 
     return commented_total
 
 
-def select_posts(posts, campaign, hidden_ids, page_id, db):
+def select_posts(posts, campaign, hidden_ids, page_id, db, log=None):
+    log = log or logger
     selected = []
     hidden_count = 0
     for post in posts:
         author = str(post.get("author_id") or "")
         preview = " ".join((post.get("text") or "").split())[:120]
         if post_status(db, post["post_url"]) == "comments_locked":
-            logger.info("Bỏ qua bài khóa comment: %s", post["post_url"])
+            log.info("Bỏ qua bài khóa comment: %s", post["post_url"])
             continue
         if author and (author in hidden_ids or author == str(page_id)):
             hidden_count += 1
@@ -275,26 +298,27 @@ def select_posts(posts, campaign, hidden_ids, page_id, db):
         if story_already_commented(db, post.get("text")) or already_commented(db, post["post_url"]):
             phrases = campaign.get("help_phrases")
             if keyword_match(post.get("text", ""), campaign["subjects"], phrases):
-                logger.info("Khớp từ khóa nhưng đã comment: %s", post["post_url"])
+                log.info("Khớp từ khóa nhưng đã comment: %s", post["post_url"])
             save_post(db, post, "commented", account_name=_current_account)
             continue
         matched = keyword_match(post.get("text", ""), campaign["subjects"], campaign.get("help_phrases"))
         if not matched and not campaign["jev_review_all"]:
-            logger.info("Không khớp %s | %s", post["post_url"], preview)
+            log.info("Không khớp %s | %s", post["post_url"], preview)
             save_post(db, post, "filtered", account_name=_current_account)
             continue
-        logger.info("Khớp %s | %s", post["post_url"], preview)
+        log.info("Khớp %s | %s", post["post_url"], preview)
         selected.append(post)
     return selected, hidden_count
 
 
-def apply_jev(posts, campaign, db):
+def apply_jev(posts, campaign, db, log=None):
+    log = log or logger
     ready = []
     for post in posts:
         try:
             label, confidence = review_post(post.get("text", ""), campaign["subjects"])
         except JevError as error:
-            logger.warning("Jev bỏ qua bài: %s", error)
+            log.warning("Jev bỏ qua bài: %s", error)
             save_post(db, post, "jev_failed", account_name=_current_account)
             continue
         passed = label == "comment" and confidence >= float(campaign["jev_confidence"])
@@ -307,26 +331,44 @@ def apply_jev(posts, campaign, db):
 async def run_campaign(commenter, parent_dir, name, dry_run, cooldown_seconds=None, account_name=""):
     global _current_account
     _current_account = account_name or ""
+    log = _log_for(_current_account)
+    log.info("═══ Bắt đầu campaign %s (account=%s) ═══", name, _current_account)
     campaign = load_campaign(parent_dir, name)
+    log.info("Campaign: %s group, subjects=%s, dry_run=%s",
+             len(campaign["groups"]), campaign["subjects"], dry_run)
     hidden = hidden_author_ids(Path(parent_dir) / "account" / "hidden-authors.txt")
     db = connect(Path(__file__).resolve().parent / "data" / "app.db")
+    log.info("Bước 1/3: đăng nhập bằng cookie ...")
     await commenter.login_with_cookie()
     try:
+        log.info("Bước 2/3: chuyển sang danh tính Page %s ...", commenter.page_id)
         await commenter._switch_to_page()
-        logger.info("Đã chuyển sang Page %s", commenter.page_id)
+        # Xác nhận thật sự đã ở Page trước khi vào group — tránh comment dưới
+        # danh tính cá nhân nếu switch lỗi.
+        if not commenter._page_ready:
+            log.warning("Chưa xác nhận được danh tính Page, kiểm tra lại trước khi vào group")
+            raise RuntimeError("Không xác nhận được danh tính Page trước khi vào group")
+        log.info("Đã ở danh tính Page %s — bắt đầu vào group", commenter.page_id)
         pool = list(dict.fromkeys(commenter.comments))
         pause = campaign["cooldown_seconds"] if cooldown_seconds is None else cooldown_seconds
         commented_total = 0
+        group_stats = []  # (url, read, commented, skipped_breakdown)
         for group_url in campaign["groups"]:
             try:
+                before = commented_total
                 commented_total = await scan_group(
-                    commenter, group_url, campaign, db, pool, commented_total, dry_run, pause
+                    commenter, group_url, campaign, db, pool, commented_total, dry_run, pause, log=log
                 )
+                group_stats.append((group_url, commented_total - before))
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.exception("Dừng group %s", group_url)
-        logger.info("Xong. Đã comment %s bài", commented_total)
+            except Exception as e:
+                log.exception("Dừng group %s", group_url)
+                group_stats.append((group_url, 0))
+        log.info("═══ Tổng kết campaign %s ═══", name)
+        for url, n in group_stats:
+            log.info("  • %s → comment %s bài", url, n)
+        log.info("Tổng: đã comment %s bài", commented_total)
     finally:
         db.close()
         await commenter.close_browser()
