@@ -420,6 +420,14 @@ class FacebookFanpageCommenter:
                 context = await self.browser.new_context()
             self.context = context
             await context.add_cookies(self.load_browser_cookies())
+            # persistent context restore lại các tab phiên trước (có thể đang ở
+            # group/post cũ) → đóng hết, chỉ giữ tab mới của phiên này.
+            if self.user_data_dir:
+                for old_page in context.pages:
+                    try:
+                        await old_page.close()
+                    except Exception:
+                        pass
             self.page = await context.new_page()
             await self.page.goto(
                 FACEBOOK_URL, wait_until="domcontentloaded", timeout=60000
@@ -454,27 +462,137 @@ class FacebookFanpageCommenter:
     async def _switch_to_page(self):
         if not re.fullmatch(r"[0-9]+", self.page_id or ""):
             raise ValueError("Facebook Page ID không hợp lệ; phải là chuỗi số ASCII")
+        # Nếu đã switch thành công trước đó thì không cần lặp lại toàn bộ quy
+        # trình (nút 'Chuyển ngay' sẽ biến mất sau khi đã ở danh tính Page).
+        if self._page_ready:
+            return
         await self.page.goto(
             f"https://www.facebook.com/{self.page_id}",
             wait_until="domcontentloaded",
             timeout=60000,
         )
-        switch_now = self.page.locator("button, [role='button']").filter(
-            has_text=re.compile(r"Chuyển ngay|Switch now", re.I)
+        # Nút switch tới Page có 2 layout khác nhau:
+        #   classic → button/link "Chuyển ngay" | "Switch now" (nằm trên trang Page)
+        #   New Pages Experience → vào "Quản lý trang" rồi mở profile switcher góc phải
+        switch_now = self.page.locator(
+            "button, [role='button'], [role='link'], a"
+        ).filter(
+            has_text=re.compile(
+                r"^Chuyển ngay$|^Switch now$",
+                re.I,
+            )
         )
-        await self.page.wait_for_timeout(1500)
-        if self._page_ready and not await switch_now.count():
-            return
-        if not await switch_now.count():
-            raise RuntimeError("Không thấy nút chuyển sang Page")
-        await switch_now.first.click()
-        for _ in range(16):
-            if not await switch_now.count():
+        # chờ nút 'Chuyển ngay' tối đa ~10s
+        for _ in range(10):
+            if await switch_now.count():
                 break
-            await self.page.wait_for_timeout(500)
-        else:
-            raise RuntimeError("Không xác nhận được danh tính Page")
-        self._page_ready = True
+            await self.page.wait_for_timeout(1000)
+        if await switch_now.count():
+            await switch_now.first.click()
+            for _ in range(20):
+                if not await switch_now.count():
+                    break
+                await self.page.wait_for_timeout(500)
+            else:
+                raise RuntimeError("Không xác nhận được danh tính Page")
+            self._page_ready = True
+            self.log.info("Đã chuyển sang danh tính Page %s", self.page_id)
+            return
+
+        # NPE layout: không có nút 'Chuyển ngay'. Nếu đang ở 'Quản lý trang' thì
+        # đã là danh tính Page → xong. Còn không thì mở menu avatar góc phải
+        # và chọn Page trong menu switcher.
+        try:
+            on_manager = await self.page.evaluate(
+                """() => (document.body.innerText || '').includes('Quản lý trang')
+                        || (document.body.innerText || '').includes('Page management')"""
+            )
+        except Exception:
+            on_manager = False
+        if on_manager:
+            self._page_ready = True
+            self.log.info("Đã ở Quản lý trang — coi như danh tính Page %s", self.page_id)
+            return
+
+        if await self._switch_via_avatar_menu():
+            self._page_ready = True
+            self.log.info("Đã chuyển sang Page qua menu avatar %s", self.page_id)
+            return
+
+        # Fallback: kiểm tra composer đã hiển thị đúng Page chưa
+        if await self._already_on_page():
+            self._page_ready = True
+            self.log.info("Đã ở danh tính Page (composer xác nhận)")
+            return
+
+        try:
+            dbg = Path(__file__).resolve().parent / "data" / "debug"
+            dbg.mkdir(parents=True, exist_ok=True)
+            await self.page.screenshot(path=str(dbg / f"no-switch-{self.account_name}.png"))
+        except Exception:
+            pass
+        raise RuntimeError("Không thấy nút chuyển sang Page (đã thử cả menu avatar)")
+
+    async def _switch_via_avatar_menu(self):
+        """Mở menu avatar góc phải và chọn Page trong switcher (NPE layout)."""
+        try:
+            # nút tròn có avatar hình ảnh user ở header phải, cuối cụm icon
+            avatar = self.page.locator(
+                "div[role='navigation'] a[aria-label*='Trang cá nhân'], "
+                "div[role='navigation'] a[aria-label*='profile' i], "
+                "div[role='navigation'] [role='button'][aria-haspopup='menu'], "
+                "a[aria-label*='Tài khoản'], a[aria-label*='Account' i]"
+            )
+            if not await avatar.count():
+                return False
+            await avatar.last.click()
+            await self.page.wait_for_timeout(1500)
+            # menu hiện lên — chọn mục có tên Page (hoặc 'Chuyển sang' / 'Switch to')
+            option = self.page.locator(
+                "[role='menu'] [role='menuitem'], [role='menu'] a, "
+                "[role='dialog'] [role='button'], [role='menu'] [role='button']"
+            ).filter(
+                has_text=re.compile(
+                    rf"Chuyển sang|Switch to|{re.escape(self.page_id)}|Trang",
+                    re.I,
+                )
+            )
+            if not await option.count():
+                # bất kỳ mục nào trong menu là link tới /{page_id}
+                option = self.page.locator(
+                    f"[role='menu'] a[href*='{self.page_id}'], "
+                    f"[role='dialog'] a[href*='{self.page_id}']"
+                )
+            if not await option.count():
+                await self.page.keyboard.press("Escape")
+                return False
+            await option.first.click()
+            await self.page.wait_for_timeout(3000)
+            return True
+        except Exception:
+            return False
+
+    async def _already_on_page(self):
+        """Chỉ trả True khi CHẮC đã ở danh tính Page: composer comment trên trang Page
+        hiển thị chip 'Bình luận với tư cách' có link tới page_id. Các heuristic khác
+        (URL, menu avatar) không đủ tin — trả False để nút switch xử lý."""
+        try:
+            composer = self.page.locator(
+                "[contenteditable='true'][aria-label*='Bình luận'], "
+                "[contenteditable='true'][aria-label*='comment' i]"
+            ).first
+            if not await composer.count():
+                return False
+            await composer.click()
+            await self.page.wait_for_timeout(800)
+            # chip actor trong composer — khi đã switch là link tới trang Page
+            acting = await self.page.locator(
+                f"a[href*='/{self.page_id}'], [role='combobox'] >> text=/./"
+            ).count()
+            await self.page.keyboard.press("Escape")
+            return bool(acting)
+        except Exception:
+            return False
 
     async def _set_comment_text(self, composer, comment_text):
         """Put the comment in the box once. Stealth fill() types it twice."""
@@ -563,12 +681,79 @@ class FacebookFanpageCommenter:
             '[contenteditable="true"][aria-label*="comment" i]'
         ).locator("visible=true")
         if not await composer.count():
-            button = card.locator('[aria-label="Bình luận"], [aria-label="Comment"], [aria-label*="Để lại bình luận"]')
-            if await button.count():
-                await button.first.click()
-                await self.page.wait_for_timeout(500)
+            # Mở ô comment bằng icon bong bóng chat trong action bar (thích/comment/share).
+            # FB render icon là SVG — không có text — nên phải locate qua JS:
+            # tìm phần tử clickable chứa icon comment trong card.
+            opened = await card.evaluate(
+                """(el) => {
+                    const isCommentIcon = (n) => {
+                        // icon comment = svg path đặc trưng bong bóng hoặc aria-label
+                        const lbl = (n.getAttribute && n.getAttribute('aria-label')) || '';
+                        if (/bình luận|comment/i.test(lbl)) return true;
+                        const svg = n.querySelector && n.querySelector('svg');
+                        if (!svg) return false;
+                        // path comment bubble FB thường có d bắt đầu M... với nhiều curves
+                        // nhưng đơn giản hơn: check nút có svg và KHÔNG phải like/share
+                        const aria = (n.getAttribute('aria-label') || '').toLowerCase();
+                        const txt = (n.innerText || '').toLowerCase();
+                        if (/thích|like|chia sẻ|share|phóng to|gửi|send/.test(aria + ' ' + txt)) return false;
+                        return true;
+                    };
+                    // duyệt các role=button / span[role='button'] / div[role='button'] trong card
+                    const candidates = el.querySelectorAll(
+                        '[role="button"], [aria-label*="Bình luận"], [aria-label*="Comment" i]'
+                    );
+                    for (const n of candidates) {
+                        const label = (n.getAttribute('aria-label') || '').toLowerCase();
+                        const text = (n.innerText || '').trim().toLowerCase();
+                        // chính xác aria-label comment trước
+                        if (/^(bình luận|comment)(\\s|$|\\d)/.test(label) ||
+                            /^(bình luận|comment)(\\s|$|\\d)/.test(text)) {
+                            n.scrollIntoView({block:'center'});
+                            n.click();
+                            return 'clicked-label';
+                        }
+                    }
+                    // fallback: action bar — 3 nút like/comment/share thường nằm cuối card,
+                    // chọn nút thứ 2 (comment) trong cụm nút có svg
+                    const bars = el.querySelectorAll('[role="button"]');
+                    const icons = [];
+                    for (const n of bars) {
+                        const r = n.getBoundingClientRect();
+                        if (r.width < 20 || r.height < 14) continue;
+                        if (!n.querySelector('svg')) continue;
+                        icons.push(n);
+                    }
+                    // comment icon là nút giữa (index 1) trong cụm 3 nút cuối cùng của card
+                    if (icons.length >= 3) {
+                        const last3 = icons.slice(-3);
+                        last3[1].scrollIntoView({block:'center'});
+                        last3[1].click();
+                        return 'clicked-mid';
+                    }
+                    return '';
+                }"""
+            )
+            if opened:
+                self.log.info("Đã bấm icon comment (%s)", opened)
+                await self.page.wait_for_timeout(900)
+            else:
+                self.log.warning("JS không tìm được nút comment trong card")
+            # đợi composer render thêm 3s
+            if not await composer.count():
+                try:
+                    await composer.first.wait_for(state="visible", timeout=3000)
+                except Exception:
+                    pass
         if not await composer.count():
-            self.log.warning("Không thấy ô comment trong khung bài")
+            # dump đoạn html của card để debug selector (cắt 300 ký tự)
+            try:
+                snippet = await card.evaluate(
+                    "(el) => (el.innerText || '').replace(/\\s+/g,' ').slice(0,300)"
+                )
+                self.log.warning("Không thấy ô comment. Card text: %s", snippet)
+            except Exception:
+                self.log.warning("Không thấy ô comment trong khung bài")
             return False
         try:
             await composer.first.scroll_into_view_if_needed()

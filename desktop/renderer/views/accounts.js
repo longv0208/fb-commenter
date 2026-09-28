@@ -16,18 +16,21 @@
     const accounts = await api.get("/api/accounts");
     document.getElementById("acc-list").innerHTML = accounts.length
       ? accounts.map((a) => `<tr>
-          <td><a href="#" data-edit="${esc(a.name)}"><b>${esc(a.name)}</b></a></td>
+          <td><b>${esc(a.name)}</b></td>
           <td>${esc(a.page_id || "—")}</td>
           <td class="muted">${esc((a.proxy || "").slice(0, 30))}</td>
           <td><span class="muted">${a.use_profile ? "profile" : ""}</span></td>
+          <td><button class="btn btn-sm" data-edit="${esc(a.name)}">Sửa</button></td>
+          <td><button class="btn btn-sm btn-danger" data-del="${esc(a.name)}">Xóa</button></td>
         </tr>`).join("")
-      : '<tr><td colspan="4" class="muted">Chưa có account</td></tr>';
+      : '<tr><td colspan="6" class="muted">Chưa có account</td></tr>';
   }
 
   function fillForm(a) {
     editing = a ? a.name : null;
     document.getElementById("form-title").textContent = a ? `Sửa: ${a.name}` : "Thêm tài khoản";
     document.getElementById("btn-delete").hidden = !a;
+    document.getElementById("btn-cancel").hidden = !a;
     for (const k of ["name", "cookie", "page_id", "proxy", "profile_dir", "comment_list"]) {
       form.elements[k].value = a ? a[k] || "" : "";
     }
@@ -37,6 +40,20 @@
   }
 
   document.getElementById("acc-list").addEventListener("click", async (e) => {
+    const delName = e.target.dataset.del;
+    if (delName) {
+      e.preventDefault();
+      if (!confirm(`Xóa tài khoản "${delName}"?`)) return;
+      await api.del(`/api/accounts/${encodeURIComponent(delName)}`);
+      if (editing === delName) fillForm(null);
+      await refresh();
+      // nếu form đang Sửa một account đã bị xóa → reset về Thêm
+      if (editing) {
+        const left = await api.get("/api/accounts");
+        if (!left.find((x) => x.name === editing)) fillForm(null);
+      }
+      return;
+    }
     const name = e.target.dataset.edit;
     if (!name) return;
     e.preventDefault();
@@ -45,6 +62,7 @@
   });
 
   document.getElementById("btn-new").onclick = () => fillForm(null);
+  document.getElementById("btn-cancel").onclick = () => fillForm(null);
 
   document.getElementById("cookie-file").onchange = async (e) => {
     const f = e.target.files[0];

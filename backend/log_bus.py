@@ -67,3 +67,7 @@ def attach_root():
     root = logging.getLogger()
     if log_bus not in root.handlers:
         root.addHandler(log_bus)
+    # Chặn aiohttp access log flood (chỉ giữ log của tool)
+    logging.getLogger("aiohttp.access").propagate = False
+    logging.getLogger("aiohttp.server").propagate = False
+    logging.getLogger("aiohttp.web").propagate = False
