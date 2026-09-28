@@ -1,6 +1,8 @@
 import sqlite3
 from datetime import datetime, timezone
 
+from post_rules import fold
+
 
 def connect(path):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -38,6 +40,17 @@ def connect(path):
 def post_status(db, post_url):
     row = db.execute("SELECT status FROM posts WHERE post_url = ?", (post_url,)).fetchone()
     return row["status"] if row else ""
+
+
+def story_already_commented(db, text):
+    folded = fold(text or "")[:200]
+    if len(folded) < 30:
+        return False
+    for row in db.execute("select content from posts where status = 'commented'"):
+        old = fold(row["content"] or "")[:200]
+        if len(old) >= 30 and (folded in old or old in folded):
+            return True
+    return False
 
 
 def already_commented(db, post_url):

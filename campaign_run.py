@@ -4,11 +4,11 @@ import random
 import re
 from pathlib import Path
 
-from campaign_store import already_commented, connect, post_status, save_comment, save_post
+from campaign_store import already_commented, connect, post_status, save_comment, save_post, story_already_commented
 from image_text import read_png
 from comment_job import CommentJob
 from jev_client import JevError, review_post
-from post_rules import HELP_PHRASES, hidden_author_ids, keyword_match
+from post_rules import HELP_PHRASES, fold, hidden_author_ids, keyword_match
 
 logger = logging.getLogger("fb_commenter")
 
@@ -154,39 +154,76 @@ async def open_group(page, group_url):
     logger.info("Chưa thấy nhãn bộ lọc sau khi vào group %s", page.url)
 
 
-async def scan_group(commenter, group_url, campaign):
+def same_post(existing, item):
+    """Photo links repeat with a stable /posts/ id. Text posts repeat with a new tracking link."""
+    existing_id = re.search(r"/posts/([^/?#]+)", existing.get("post_url") or "")
+    item_id = re.search(r"/posts/([^/?#]+)", item.get("post_url") or "")
+    if existing_id and item_id and existing_id.group(1) == item_id.group(1):
+        return True
+    old = fold(existing.get("text") or "")[:200]
+    new = fold(item.get("text") or "")[:200]
+    return len(old) >= 30 and len(new) >= 30 and (old in new or new in old)
+
+
+async def scan_group(commenter, group_url, campaign, db, pool, commented_total, dry_run, pause):
+    """Scroll the feed and comment on a matching card before leaving it."""
     await open_group(commenter.page, group_url)
     await commenter.page.wait_for_timeout(3000)
     if campaign.get("sort_newest"):
         await select_newest_posts(commenter.page)
-    found = {}
+    seen = []
+    group_comments = 0
     empty_rounds = 0
     for _ in range(int(campaign["max_scrolls"])):
+        if commented_total >= int(campaign["max_comments_per_run"]):
+            logger.info("Đủ %s comment cho lượt này", campaign["max_comments_per_run"])
+            break
+        if group_comments >= int(campaign["max_comments_per_group"]):
+            logger.info("Đủ %s comment cho group này", campaign["max_comments_per_group"])
+            break
         await commenter.expand_see_more()
         await commenter.page.wait_for_timeout(400)
         batch = await commenter.collect_group_posts()
         logger.info("Màn này đọc được %s bài", len(batch))
-        if not batch and empty_rounds == 0:
-            sample = await commenter.page.evaluate(
-                """() => ({
-                    articles: document.querySelectorAll('[role="article"]').length,
-                    hrefs: Array.from(document.querySelectorAll('[role="article"] a[href]'))
-                        .map((el) => el.href.split('?')[0])
-                        .slice(0, 5)
-                })"""
-            )
-            logger.info("Chưa đọc được bài. Khung bài viết: %s. Link thấy: %s", sample["articles"], sample["hrefs"])
         added = 0
         for item in batch:
-            url = (item.get("post_url") or "").split("?")[0]
-            if not url or url in found:
-                continue
-            item["post_url"] = url
+            raw_url = item.get("post_url") or ""
+            item["post_url"] = raw_url if "__cft__" in raw_url else raw_url.split("?")[0]
             item["group_url"] = group_url
+            if not item["post_url"] or any(same_post(existing, item) for existing in seen):
+                continue
             if not keyword_match(item.get("text", ""), campaign["subjects"], campaign["help_phrases"]):
                 item["text"] = await read_post_images(commenter.page, item)
-            found[url] = item
+            seen.append(item)
             added += 1
+            preview = " ".join((item.get("text") or "").split())[:120]
+            if story_already_commented(db, item.get("text")) or already_commented(db, item["post_url"]):
+                logger.info("Đã comment trước đó, bỏ qua | %s", preview)
+                continue
+            if not keyword_match(item.get("text", ""), campaign["subjects"], campaign.get("help_phrases")):
+                logger.info("Không khớp | %s", preview)
+                save_post(db, item, "filtered")
+                continue
+            logger.info("Khớp, comment ngay | %s", preview)
+            if dry_run:
+                continue
+            if not pool or group_comments >= int(campaign["max_comments_per_group"]):
+                break
+            if commented_total >= int(campaign["max_comments_per_run"]):
+                break
+            comment = random.choice(pool)
+            pool.remove(comment)
+            ok = await commenter.comment_on_card(item.get("card_id"), comment)
+            if not ok:
+                logger.warning("Không comment được bài đang hiện")
+                continue
+            group_comments += 1
+            commented_total += 1
+            save_post(db, item, "commented")
+            save_comment(db, item["post_url"], comment, True)
+            if pause > 0 and commented_total < int(campaign["max_comments_per_run"]):
+                logger.info("Nghỉ %s giây", pause)
+                await commenter.page.wait_for_timeout(int(pause) * 1000)
         if added == 0:
             empty_rounds += 1
             if empty_rounds >= int(campaign["empty_scroll_limit"]):
@@ -195,7 +232,7 @@ async def scan_group(commenter, group_url, campaign):
             empty_rounds = 0
         await commenter.page.mouse.wheel(0, int(campaign["scroll_pixels"]))
         await commenter.page.wait_for_timeout(int(campaign["scroll_pause_ms"]))
-    return list(found.values())
+    return commented_total
 
 
 def select_posts(posts, campaign, hidden_ids, page_id, db):
@@ -211,7 +248,7 @@ def select_posts(posts, campaign, hidden_ids, page_id, db):
             hidden_count += 1
             save_post(db, post, "hidden")
             continue
-        if already_commented(db, post["post_url"]):
+        if story_already_commented(db, post.get("text")) or already_commented(db, post["post_url"]):
             phrases = campaign.get("help_phrases")
             if keyword_match(post.get("text", ""), campaign["subjects"], phrases):
                 logger.info("Khớp từ khóa nhưng đã comment: %s", post["post_url"])
@@ -251,48 +288,17 @@ async def run_campaign(commenter, parent_dir, name, dry_run, cooldown_seconds=No
     try:
         await commenter._switch_to_page()
         logger.info("Đã chuyển sang Page %s", commenter.page_id)
-        scanned = []
+        pool = list(dict.fromkeys(commenter.comments))
+        pause = campaign["cooldown_seconds"] if cooldown_seconds is None else cooldown_seconds
+        commented_total = 0
         for group_url in campaign["groups"]:
             try:
-                scanned.extend(await scan_group(commenter, group_url, campaign))
+                commented_total = await scan_group(
+                    commenter, group_url, campaign, db, pool, commented_total, dry_run, pause
+                )
             except Exception:
                 logger.exception("Dừng group %s", group_url)
-        candidates, hidden_count = select_posts(
-            scanned, campaign, hidden, commenter.page_id, db
-        )
-        if dry_run:
-            logger.info(
-                "Dry-run: quét %s, ẩn %s, chờ Jev %s. Không gửi comment.",
-                len(scanned),
-                hidden_count,
-                len(candidates),
-            )
-            for post in candidates:
-                preview = " ".join((post.get("text") or "").split())[:140]
-                logger.info("Chờ duyệt %s | %s", post["post_url"], preview)
-            return
-        ready = apply_jev(candidates, campaign, db) if campaign["use_jev"] else candidates
-        if not campaign["use_jev"]:
-            logger.info("Bỏ qua Jev, comment %s bài khớp từ khóa", len(ready))
-        pool = list(dict.fromkeys(commenter.comments))
-        jobs = []
-        per_group = {}
-        for post in ready:
-            if len(jobs) >= int(campaign["max_comments_per_run"]) or not pool:
-                break
-            group = post.get("group_url", "")
-            if per_group.get(group, 0) >= int(campaign["max_comments_per_group"]):
-                continue
-            comment = random.choice(pool)
-            pool.remove(comment)
-            jobs.append(CommentJob(post["post_url"], comment, name))
-            per_group[group] = per_group.get(group, 0) + 1
-        pause = campaign["cooldown_seconds"] if cooldown_seconds is None else cooldown_seconds
-        await commenter.comment_posts(jobs, cooldown_seconds=int(pause))
-        for job in jobs:
-            if getattr(job, "locked", False):
-                save_post(db, {"post_url": job.post_url, "text": job.comment}, "comments_locked")
-            save_comment(db, job.post_url, job.comment, job.success)
+        logger.info("Xong. Đã comment %s bài", commented_total)
     finally:
         db.close()
         await commenter.close_browser()

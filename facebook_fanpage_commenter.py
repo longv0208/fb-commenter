@@ -39,6 +39,19 @@ _GROUP_POST_SCRIPT = """
   };
   const posts = [];
   const seen = new Set();
+  let cardSeq = 0;
+  const markCard = (start) => {
+    let node = start;
+    let best = start;
+    for (let i = 0; i < 8 && node && node.parentElement; i += 1) {
+      node = node.parentElement;
+      if (node.querySelector('[aria-label*="Bình luận"], [aria-label*="Comment"], [aria-label*="comment"]')) best = node;
+      if ((node.innerText || '').length > 5000) break;
+    }
+    const id = String(++cardSeq);
+    best.setAttribute('data-fb-card', id);
+    return id;
+  };
   const groupMatch = location.pathname.match(/\\/groups\\/([^/]+)/);
   const groupSlug = groupMatch ? groupMatch[1] : '';
   const articles = document.querySelectorAll('[role="article"]');
@@ -93,7 +106,7 @@ _GROUP_POST_SCRIPT = """
         break;
       }
     }
-    posts.push({ post_url: href, text: text, author_id: authorId, image_count: images });
+    posts.push({ post_url: href, text: text, author_id: authorId, image_count: images, card_id: markCard(box) });
   }
   for (const anchor of document.querySelectorAll('a[href*="set=gm."], a[href*="set=pcb."]')) {
     const id = anchor.href.match(/set=(?:gm|pcb)\\.(\\d+)/);
@@ -112,7 +125,43 @@ _GROUP_POST_SCRIPT = """
     box.setAttribute('data-fb-post', href);
     const text = messageText(box).slice(0, 2000);
     const images = Array.from(box.querySelectorAll('img')).filter((img) => (img.naturalWidth || img.width || 0) > 40).length;
-    posts.push({ post_url: href, text: text, author_id: '', image_count: images });
+    posts.push({ post_url: href, text: text, author_id: '', image_count: images, card_id: markCard(box) });
+  }
+  for (const message of document.querySelectorAll('[data-ad-rendering-role="story_message"]')) {
+    let node = message;
+    let href = '';
+    for (let i = 0; i < 18 && node && !href; i += 1) {
+      const anchors = node.querySelectorAll ? node.querySelectorAll('a[href]') : [];
+      for (const anchor of anchors) {
+        const raw = anchor.href || '';
+        const postsAt = raw.indexOf('/posts/');
+        const permaAt = raw.indexOf('/permalink/');
+        const gmAt = raw.indexOf('set=gm.');
+        const pcbAt = raw.indexOf('set=pcb.');
+        let postId = '';
+        if (postsAt >= 0) postId = raw.slice(postsAt + 7).split(/[/?#]/)[0];
+        else if (permaAt >= 0) postId = raw.slice(permaAt + 11).split(/[/?#]/)[0];
+        else if (gmAt >= 0) postId = raw.slice(gmAt + 7).split('&')[0];
+        else if (pcbAt >= 0) postId = raw.slice(pcbAt + 8).split('&')[0];
+        if (!postId || !groupSlug) continue;
+        href = 'https://www.facebook.com/groups/' + groupSlug + '/posts/' + decodeURIComponent(postId);
+        break;
+      }
+      if (!href) {
+        const plain = Array.from(anchors).find((anchor) => {
+          const raw = anchor.href || '';
+          return raw.includes('/groups/' + groupSlug) && !raw.includes('/user/') && raw.includes('__cft__');
+        });
+        if (plain) href = plain.href;
+      }
+      node = node.parentElement;
+    }
+    if (!href || seen.has(href)) continue;
+    const text = (message.innerText || '').trim().slice(0, 2000);
+    if (text.length < 2) continue;
+    seen.add(href);
+    message.setAttribute('data-fb-post', href);
+    posts.push({ post_url: href, text: text, author_id: '', image_count: 0, card_id: markCard(node || message) });
   }
   return posts;
 }
@@ -470,6 +519,43 @@ class FacebookFanpageCommenter:
             }"""
         )
 
+    async def comment_on_card(self, card_id, comment_text):
+        """Comment in the feed card that is already on screen."""
+        self.last_comment_locked = False
+        if not self.page or not card_id:
+            return False
+        card = self.page.locator(f'[data-fb-card="{card_id}"]').first
+        try:
+            await card.wait_for(state="attached", timeout=5000)
+        except Exception:
+            logger.warning("Không còn thấy khung bài trên màn hình")
+            return False
+        composer = card.locator(
+            '[contenteditable="true"][aria-label*="Bình luận"], '
+            '[contenteditable="true"][aria-label*="comment" i]'
+        ).locator("visible=true")
+        if not await composer.count():
+            button = card.locator('[aria-label="Bình luận"], [aria-label="Comment"], [aria-label*="Để lại bình luận"]')
+            if await button.count():
+                await button.first.click()
+                await self.page.wait_for_timeout(500)
+        if not await composer.count():
+            logger.warning("Không thấy ô comment trong khung bài")
+            return False
+        try:
+            await composer.first.scroll_into_view_if_needed()
+            await self._set_comment_text(composer.first, comment_text)
+            await composer.first.press("Enter")
+            posted = card.get_by_text(comment_text, exact=True)
+            if not await posted.count():
+                logger.warning("Không xác nhận được comment đã hiện trong khung bài")
+                return False
+            logger.info("Đã comment ngay trên bài đang hiện")
+            return True
+        except (ValueError, RuntimeError) as error:
+            logger.warning("Comment ngay trên bài không thực hiện được: %s", error)
+            return False
+
     async def post_comment(self, post_id, comment_text):
         self.last_comment_locked = False
         return await self._post_comment_ui(post_id, comment_text)
@@ -513,7 +599,8 @@ class FacebookFanpageCommenter:
                 raise
 
     async def comment_posts(self, jobs, cooldown_seconds=0):
-        """Comment each job in order. A failed job does not wait."""
+        """Comment each job in order. Several feed links can open the same post."""
+        commented_posts = set()
         for index, job in enumerate(jobs):
             try:
                 target = self.ui_target_url(job.post_url)
@@ -521,9 +608,22 @@ class FacebookFanpageCommenter:
                 logger.warning("Bỏ qua target không hợp lệ: %s", error)
                 job.success = False
                 continue
-            logger.info("Đang comment trên %s", target)
+            await self.page.goto(target, wait_until="domcontentloaded", timeout=60000)
+            await self.page.wait_for_timeout(1000)
+            match = re.search(r"/(?:posts|permalink)/([^/?#]+)", self.page.url)
+            post_key = match.group(1) if match else ""
+            if post_key and post_key in commented_posts:
+                logger.info("Bỏ qua, link này mở lại bài đã comment: %s", post_key)
+                job.success = False
+                job.duplicate = True
+                continue
+            if post_key:
+                job.post_url = self.page.url.split("?")[0]
+            logger.info("Đang comment trên %s", job.post_url)
             job.success = await self.post_comment(job.post_url, job.comment)
             job.locked = self.last_comment_locked
+            if post_key and job.success:
+                commented_posts.add(post_key)
             if not job.success:
                 logger.warning("Comment không hiện trên %s", job.post_url)
                 continue
