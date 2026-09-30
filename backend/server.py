@@ -144,6 +144,25 @@ async def put_campaign(request):
     return _json({"ok": True})
 
 
+async def get_account_log(request):
+    """Đọc file log gần nhất của account — hỗ trợ xem lại log khi mở tab Logs."""
+    name = request.match_info["name"]
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
+    log_dir = Path(__file__).resolve().parent.parent / "data" / "logs"
+    if not log_dir.is_dir():
+        return _json({"lines": []})
+    files = sorted(log_dir.glob(f"{safe}-*.log"), reverse=True)
+    if not files:
+        return _json({"lines": []})
+    # đọc tối đa 1000 dòng cuối
+    try:
+        text = files[0].read_text(encoding="utf-8", errors="replace")
+        lines = text.splitlines()[-1000:]
+        return _json({"lines": lines, "file": files[0].name})
+    except Exception as e:
+        return _err(e, 500)
+
+
 # ---------- WebSocket ----------
 
 async def ws_handler(request):
@@ -210,6 +229,7 @@ def create_app():
     app.router.add_get("/api/campaigns", list_campaigns)
     app.router.add_get("/api/campaigns/{name}", get_campaign)
     app.router.add_put("/api/campaigns/{name}", put_campaign)
+    app.router.add_get("/api/logs/{name}", get_account_log)
     app.router.add_get("/ws", ws_handler)
     return app
 

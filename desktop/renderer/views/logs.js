@@ -17,10 +17,36 @@
   }
 
   function lineHtml(e) {
-    const t = new Date(e.ts * 1000).toLocaleTimeString("vi-VN");
+    const t = e.ts ? new Date(e.ts * 1000).toLocaleTimeString("vi-VN") : "";
     return `<div class="log-line"><span class="ts">${t}</span>` +
       `<span class="lv-${e.level}">${e.level}</span> ` +
       `<span class="acct">[${esc(e.account)}]</span> ${esc(e.msg)}</div>`;
+  }
+
+  // parse 1 dòng file log: "2026-09-29 01:23:45,678 INFO message..."
+  function parseFileLine(line, account) {
+    const m = line.match(/^(\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2}):(\d{2}),\d+\s+(\w+)\s+(.*)$/);
+    if (!m) return { ts: 0, level: "INFO", account, msg: line };
+    const [, d, h, mi, s, lv, msg] = m;
+    const ts = new Date(`${d}T${h}:${mi}:${s}`).getTime() / 1000;
+    return { ts, level: lv, account, msg };
+  }
+
+  async function loadAccountLog(name) {
+    if (name === "*") return;
+    try {
+      const res = await api.get(`/api/logs/${encodeURIComponent(name)}`);
+      const old = (res.lines || []).map((l) => parseFileLine(l, name));
+      // merge: chỉ push những dòng chưa có (theo ts+msg) tránh trùng với live stream
+      const keys = new Set(buffer.map((e) => `${e.ts}|${e.account}|${e.msg}`));
+      for (const e of old) {
+        const k = `${e.ts}|${e.account}|${e.msg}`;
+        if (!keys.has(k)) buffer.push(e);
+      }
+      buffer.sort((a, b) => a.ts - b.ts);
+      if (buffer.length > MAX_LINES) buffer = buffer.slice(-MAX_LINES);
+      render();
+    } catch (e) { /* ignore */ }
   }
 
   function render() {
@@ -44,12 +70,24 @@
   });
 
   // populate account dropdown
-  api.get("/api/accounts").then((accounts) => {
+  api.get("/api/accounts").then(async (accounts) => {
     accountSel.innerHTML = '<option value="*">Tất cả account</option>' +
       accounts.map((a) => `<option value="${esc(a.name)}">${esc(a.name)}</option>`).join("");
+    // nếu đang có 1 account running → auto chọn + load log file của nó
+    try {
+      const runs = await api.get("/api/runs");
+      const running = (runs || []).find((r) => r.status === "running" || r.status === "starting");
+      if (running) {
+        accountSel.value = running.name;
+        await loadAccountLog(running.name);
+      }
+    } catch (e) { /* ignore */ }
   });
 
-  accountSel.onchange = render;
+  accountSel.onchange = async () => {
+    render();
+    if (accountSel.value !== "*") await loadAccountLog(accountSel.value);
+  };
   document.getElementById("log-search").oninput = render;
   document.querySelectorAll("[data-level]").forEach((chip) => {
     chip.onclick = () => {
