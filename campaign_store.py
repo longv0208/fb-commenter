@@ -37,6 +37,17 @@ def connect(path):
     )
     _ensure_column(db, "posts", "account_name", "account_name TEXT DEFAULT ''")
     _ensure_column(db, "comment_history", "account_name", "account_name TEXT DEFAULT ''")
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS account_seen (
+            account_name TEXT NOT NULL DEFAULT '',
+            post_url TEXT NOT NULL,
+            content TEXT,
+            status TEXT,
+            PRIMARY KEY (account_name, post_url)
+        )
+        """
+    )
     db.commit()
     return db
 
@@ -52,26 +63,68 @@ def post_status(db, post_url):
     return row["status"] if row else ""
 
 
-def story_already_commented(db, text):
+def _owned(account_name):
+    return account_name or ""
+
+
+def story_already_commented(db, text, account_name=""):
+    """A comment by one account does not count for another account."""
     folded = fold(text or "")[:200]
     if len(folded) < 30:
         return False
-    for row in db.execute("select content from posts where status = 'commented'"):
+    owner = _owned(account_name)
+    rows = db.execute(
+        """
+        SELECT content FROM posts
+        WHERE status = 'commented' AND ifnull(account_name, '') = ?
+        UNION ALL
+        SELECT content FROM account_seen
+        WHERE status = 'commented' AND ifnull(account_name, '') = ?
+        """,
+        (owner, owner),
+    )
+    for row in rows:
         old = fold(row["content"] or "")[:200]
         if len(old) >= 30 and (folded in old or old in folded):
             return True
     return False
 
 
-def already_commented(db, post_url):
+def already_commented(db, post_url, account_name=""):
     row = db.execute(
-        "SELECT 1 FROM comment_history WHERE post_url = ? AND success = 1",
-        (post_url,),
+        """
+        SELECT 1 FROM comment_history
+        WHERE post_url = ? AND success = 1 AND ifnull(account_name, '') = ?
+        """,
+        (post_url, _owned(account_name)),
     ).fetchone()
     return row is not None
 
 
+def _remember_account(db, account_name, post, status):
+    db.execute(
+        """
+        INSERT INTO account_seen (account_name, post_url, content, status)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(account_name, post_url) DO UPDATE SET
+            content = excluded.content,
+            status = excluded.status
+        """,
+        (_owned(account_name), post["post_url"], post.get("text", ""), status),
+    )
+
+
 def save_post(db, post, status, label=None, confidence=None, account_name=""):
+    owner = _owned(account_name)
+    existing = db.execute(
+        "SELECT ifnull(account_name, '') AS account_name FROM posts WHERE post_url = ?",
+        (post["post_url"],),
+    ).fetchone()
+    # One URL can be commented by several accounts. Do not replace the other account's row.
+    if existing and existing["account_name"] and owner and existing["account_name"] != owner:
+        _remember_account(db, owner, post, status)
+        db.commit()
+        return
     db.execute(
         """
         INSERT INTO posts (post_url, group_url, author_id, content, status, jev_label, jev_confidence, seen_at, account_name)
@@ -91,9 +144,11 @@ def save_post(db, post, status, label=None, confidence=None, account_name=""):
             label,
             confidence,
             datetime.now(timezone.utc).isoformat(),
-            account_name,
+            owner,
         ),
     )
+    if status == "commented":
+        _remember_account(db, owner, post, status)
     db.commit()
 
 

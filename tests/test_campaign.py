@@ -3,7 +3,7 @@ import json
 import pytest
 
 from campaign_run import load_campaign, select_posts
-from campaign_store import already_commented, connect, save_comment, save_post
+from campaign_store import already_commented, connect, save_comment, save_post, story_already_commented
 from jev_client import JevError, review_post
 from post_rules import keyword_match
 
@@ -52,6 +52,21 @@ def test_hidden_author_and_previous_comment_are_skipped(tmp_path):
         "https://www.facebook.com/groups/a/posts/3"
     ]
     assert already_commented(db, posts[0]["post_url"])
+
+
+def test_another_account_can_comment_the_same_post(tmp_path):
+    db = connect(tmp_path / "app.db")
+    url = "https://www.facebook.com/groups/a/posts/1"
+    text = "Hôm nay mình đang kiểm tra CSD201 và cần tài liệu cho bài tập này"
+    save_post(db, {"post_url": url, "text": text}, "commented", account_name="acc-a")
+    save_comment(db, url, "ib page", True, account_name="acc-a")
+    assert already_commented(db, url, "acc-a")
+    assert story_already_commented(db, text, "acc-a")
+    assert not already_commented(db, url, "acc-b")
+    assert not story_already_commented(db, text, "acc-b")
+    save_post(db, {"post_url": url, "text": text}, "commented", account_name="acc-b")
+    assert story_already_commented(db, text, "acc-a")
+    assert story_already_commented(db, text, "acc-b")
 
 
 def test_load_campaign_requires_groups(tmp_path):

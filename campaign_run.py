@@ -112,12 +112,30 @@ async def select_newest_posts(page, log=None):
                 .slice(0, 8)"""
         )
         raise RuntimeError(
-            f"Không thấy lựa chọn Bài viết mới. Bộ lọc đang là {state['label']!r}. "
+            f"Không thấy lựa chọn Bài viết mới. Bộ lọc đang là {label!r}. "
             f"Menu đang hiện: {visible}. Trang: {page.url}"
         )
     await choice.first.click()
-    await page.wait_for_timeout(700)
-    log.info("Đã chọn lọc Bài viết mới")
+    # Feed đang vẽ lại sau khi đổi lọc. Chưa quét bài khi menu còn mở hoặc nhãn chưa đổi.
+    settled = False
+    for _ in range(16):
+        await page.wait_for_timeout(500)
+        settled = await page.evaluate(
+            """() => {
+                const menu = document.querySelector('[role="menu"], [role="listbox"]');
+                if (menu && /Bài viết mới|New posts/i.test(menu.innerText || '')) return false;
+                const buttons = Array.from(document.querySelectorAll('[role="button"]'));
+                return buttons.some((el) => /Bài viết mới|New posts/i.test(
+                    (el.innerText || '') + ' ' + (el.getAttribute('aria-label') || '')
+                ));
+            }"""
+        )
+        if settled:
+            break
+    if not settled:
+        log.warning("Đã bấm Bài viết mới nhưng feed chưa đổi nhãn lọc")
+    await page.wait_for_timeout(2000)
+    log.info("Feed đã ở Bài viết mới, bắt đầu quét")
 
 
 async def read_post_images(page, post):
@@ -184,6 +202,8 @@ async def scan_group(commenter, group_url, campaign, db, pool, commented_total, 
     await commenter.page.wait_for_timeout(3000)
     if campaign.get("sort_newest"):
         await select_newest_posts(commenter.page, log=log)
+    else:
+        log.info("Bắt đầu quét feed")
     seen = []
     group_comments = 0
     skipped_keyword = 0
@@ -202,7 +222,6 @@ async def scan_group(commenter, group_url, campaign, db, pool, commented_total, 
         await commenter.expand_see_more()
         await commenter.page.wait_for_timeout(400)
         batch = await commenter.collect_group_posts()
-        log.info("Màn này đọc được %s bài", len(batch))
         added = 0
         for item in batch:
             raw_url = item.get("post_url") or ""
@@ -215,13 +234,11 @@ async def scan_group(commenter, group_url, campaign, db, pool, commented_total, 
             seen.append(item)
             added += 1
             preview = " ".join((item.get("text") or "").split())[:120]
-            if story_already_commented(db, item.get("text")) or already_commented(db, item["post_url"]):
+            if story_already_commented(db, item.get("text"), _current_account) or already_commented(db, item["post_url"], _current_account):
                 skipped_done += 1
-                log.info("Đã comment trước đó, bỏ qua | %s", preview)
                 continue
             if not keyword_match(item.get("text", ""), campaign["subjects"], campaign.get("help_phrases")):
                 skipped_keyword += 1
-                log.info("Không khớp | %s", preview)
                 save_post(db, item, "filtered", account_name=_current_account)
                 continue
             log.info("Khớp, comment ngay | %s", preview)
@@ -233,18 +250,7 @@ async def scan_group(commenter, group_url, campaign, db, pool, commented_total, 
                 break
             comment = random.choice(pool)
             pool.remove(comment)
-            # thử comment ngay trong feed card trước (nhanh); fail thì mở post detail
             ok = await commenter.comment_on_card(item.get("card_id"), comment)
-            if not ok and item.get("post_url"):
-                log.info("Thử lại bằng cách mở post detail %s", item["post_url"])
-                ok = await commenter.post_comment(item["post_url"], comment)
-                if ok:
-                    # quay lại group feed để tiếp tục scroll
-                    try:
-                        await commenter.page.go_back(wait_until="domcontentloaded", timeout=20000)
-                        await commenter.page.wait_for_timeout(1500)
-                    except Exception:
-                        pass
             if not ok:
                 skipped_failed += 1
                 log.warning("Không comment được bài đang hiện")
@@ -295,7 +301,7 @@ def select_posts(posts, campaign, hidden_ids, page_id, db, log=None):
             hidden_count += 1
             save_post(db, post, "hidden", account_name=_current_account)
             continue
-        if story_already_commented(db, post.get("text")) or already_commented(db, post["post_url"]):
+        if story_already_commented(db, post.get("text"), _current_account) or already_commented(db, post["post_url"], _current_account):
             phrases = campaign.get("help_phrases")
             if keyword_match(post.get("text", ""), campaign["subjects"], phrases):
                 log.info("Khớp từ khóa nhưng đã comment: %s", post["post_url"])
@@ -303,7 +309,6 @@ def select_posts(posts, campaign, hidden_ids, page_id, db, log=None):
             continue
         matched = keyword_match(post.get("text", ""), campaign["subjects"], campaign.get("help_phrases"))
         if not matched and not campaign["jev_review_all"]:
-            log.info("Không khớp %s | %s", post["post_url"], preview)
             save_post(db, post, "filtered", account_name=_current_account)
             continue
         log.info("Khớp %s | %s", post["post_url"], preview)

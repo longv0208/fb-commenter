@@ -41,15 +41,10 @@ _GROUP_POST_SCRIPT = """
   const seen = new Set();
   let cardSeq = 0;
   const markCard = (start) => {
-    let node = start;
-    let best = start;
-    for (let i = 0; i < 8 && node && node.parentElement; i += 1) {
-      node = node.parentElement;
-      if (node.querySelector('[aria-label*="Bình luận"], [aria-label*="Comment"], [aria-label*="comment"]')) best = node;
-      if ((node.innerText || '').length > 5000) break;
-    }
+    // Gắn ID trực tiếp lên element chứa post — đừng bubble lên ancestor,
+    // vì ancestor có thể bao nhiều bài → click nhầm nút của bài khác.
     const id = String(++cardSeq);
-    best.setAttribute('data-fb-card', id);
+    start.setAttribute('data-fb-card', id);
     return id;
   };
   const groupMatch = location.pathname.match(/\\/groups\\/([^/]+)/);
@@ -117,13 +112,17 @@ _GROUP_POST_SCRIPT = """
     const href = 'https://www.facebook.com/groups/' + groupSlug + '/posts/' + id[1];
     if (seen.has(href)) continue;
     seen.add(href);
-    let box = anchor;
-    let node = anchor;
-    for (let i = 0; i < 12 && node.parentElement; i += 1) {
-      const parent = node.parentElement;
-      if ((parent.innerText || '').length > 2500) break;
-      node = parent;
-      box = parent;
+    // card = article[role=article] gần nhất chứa anchor → action bar của đúng bài
+    let box = anchor.closest('[role="article"]');
+    if (!box) {
+      box = anchor;
+      let node = anchor;
+      for (let i = 0; i < 12 && node.parentElement; i += 1) {
+        const parent = node.parentElement;
+        if ((parent.innerText || '').length > 2500) break;
+        node = parent;
+        box = parent;
+      }
     }
     box.setAttribute('data-fb-post', href);
     const text = messageText(box).slice(0, 2000);
@@ -164,7 +163,9 @@ _GROUP_POST_SCRIPT = """
     if (text.length < 2) continue;
     seen.add(href);
     message.setAttribute('data-fb-post', href);
-    posts.push({ post_url: href, text: text, author_id: '', image_count: 0, card_id: markCard(node || message) });
+    // card phải là article chứa story, không phải node cao (dễ lấn sang bài khác)
+    const articleHost = message.closest('[role="article"]') || node || message;
+    posts.push({ post_url: href, text: text, author_id: '', image_count: 0, card_id: markCard(articleHost) });
   }
   return posts;
 }
@@ -595,13 +596,19 @@ class FacebookFanpageCommenter:
             return False
 
     async def _set_comment_text(self, composer, comment_text):
-        """Put the comment in the box once. Stealth fill() types it twice."""
-        await composer.click()
+        """Focus the box in the page and type once. Playwright click waits 30s and stalls the run."""
+        await composer.evaluate(
+            """(el) => {
+                el.scrollIntoView({block: 'center', inline: 'nearest'});
+                el.focus();
+                el.click();
+            }"""
+        )
         await self.page.keyboard.insert_text(comment_text)
         await self.page.wait_for_timeout(300)
         written = " ".join((await composer.inner_text()).split())
         if written.count(comment_text) != 1:
-            raise RuntimeError(f"Ô comment không chứa đúng một bản nội dung: {written[:120]}")
+            raise RuntimeError("Ô comment không nhận nội dung")
 
     async def _post_comment_ui(self, post_id, comment_text):
         if not self.page:
@@ -665,6 +672,40 @@ class FacebookFanpageCommenter:
             }"""
         )
 
+    def _dialog_composer(self):
+        """Comment box Facebook opens in the post popup, outside the feed card."""
+        return self.page.locator(
+            '[role="dialog"] [contenteditable="true"][aria-label*="Bình luận" i], '
+            '[role="dialog"] [contenteditable="true"][aria-label*="comment" i], '
+            '[role="dialog"] [role="textbox"][aria-label*="Bình luận" i], '
+            '[role="dialog"] [role="textbox"][aria-label*="comment" i]'
+        ).locator("visible=true")
+
+    async def _close_post_dialog(self):
+        """Close only the post popup. Leave the group feed in place."""
+        try:
+            closed = await self.page.evaluate(
+                """() => {
+                    const dialog = document.querySelector('[role="dialog"]');
+                    if (!dialog) return false;
+                    const button = Array.from(dialog.querySelectorAll('[aria-label]')).find((el) =>
+                        /^(đóng|close)$/i.test((el.getAttribute('aria-label') || '').trim())
+                    );
+                    if (!button) return false;
+                    button.click();
+                    return true;
+                }"""
+            )
+            if closed:
+                await self.page.wait_for_timeout(800)
+            still_open = await self.page.locator('[role="dialog"]').count()
+            on_permalink = "/permalink/" in (self.page.url or "")
+            if still_open and on_permalink:
+                await self.page.go_back(wait_until="domcontentloaded", timeout=15000)
+                await self.page.wait_for_timeout(800)
+        except Exception:
+            return
+
     async def comment_on_card(self, card_id, comment_text):
         """Comment in the feed card that is already on screen."""
         self.last_comment_locked = False
@@ -677,96 +718,99 @@ class FacebookFanpageCommenter:
             self.log.warning("Không còn thấy khung bài trên màn hình")
             return False
         composer = card.locator(
-            '[contenteditable="true"][aria-label*="Bình luận"], '
-            '[contenteditable="true"][aria-label*="comment" i]'
+            '[contenteditable="true"][aria-label*="Bình luận" i], '
+            '[contenteditable="true"][aria-label*="comment" i], '
+            '[role="textbox"][aria-label*="Bình luận" i], '
+            '[role="textbox"][aria-label*="comment" i]'
         ).locator("visible=true")
-        if not await composer.count():
-            # Mở ô comment bằng icon bong bóng chat trong action bar (thích/comment/share).
-            # FB render icon là SVG — không có text — nên phải locate qua JS:
-            # tìm phần tử clickable chứa icon comment trong card.
+        # Nút Bình luận trên group thường chỉ là icon, không có SVG và không có chữ.
+        # Bấm lần lượt: nhãn Bình luận, rồi nút ngay bên phải Thích, rồi số bình luận.
+        dialog = self._dialog_composer()
+        for attempt in range(4):
+            if await composer.count() or await dialog.count():
+                break
             opened = await card.evaluate(
-                """(el) => {
-                    const isCommentIcon = (n) => {
-                        // icon comment = svg path đặc trưng bong bóng hoặc aria-label
-                        const lbl = (n.getAttribute && n.getAttribute('aria-label')) || '';
-                        if (/bình luận|comment/i.test(lbl)) return true;
-                        const svg = n.querySelector && n.querySelector('svg');
-                        if (!svg) return false;
-                        // path comment bubble FB thường có d bắt đầu M... với nhiều curves
-                        // nhưng đơn giản hơn: check nút có svg và KHÔNG phải like/share
-                        const aria = (n.getAttribute('aria-label') || '').toLowerCase();
-                        const txt = (n.innerText || '').toLowerCase();
-                        if (/thích|like|chia sẻ|share|phóng to|gửi|send/.test(aria + ' ' + txt)) return false;
-                        return true;
+                """(el, attempt) => {
+                    const visible = (node) => {
+                        const r = node.getBoundingClientRect();
+                        return r.width > 20 && r.height > 14 && r.width < 360 && r.bottom > 0;
                     };
-                    // duyệt các role=button / span[role='button'] / div[role='button'] trong card
-                    const candidates = el.querySelectorAll(
-                        '[role="button"], [aria-label*="Bình luận"], [aria-label*="Comment" i]'
-                    );
-                    for (const n of candidates) {
-                        const label = (n.getAttribute('aria-label') || '').toLowerCase();
-                        const text = (n.innerText || '').trim().toLowerCase();
-                        // chính xác aria-label comment trước
-                        if (/^(bình luận|comment)(\\s|$|\\d)/.test(label) ||
-                            /^(bình luận|comment)(\\s|$|\\d)/.test(text)) {
-                            n.scrollIntoView({block:'center'});
-                            n.click();
-                            return 'clicked-label';
-                        }
+                    const targets = [];
+                    const seen = new Set();
+                    const add = (node) => {
+                        if (!node || seen.has(node) || !visible(node)) return;
+                        if (node.closest('[contenteditable="true"], [role="textbox"]')) return;
+                        seen.add(node);
+                        targets.push(node);
+                    };
+                    for (const node of el.querySelectorAll('[aria-label], [role="button"], [role="link"]')) {
+                        const label = ((node.getAttribute('aria-label') || '') + ' ' + (node.innerText || ''))
+                            .replace(/\\s+/g, ' ').trim().toLowerCase();
+                        if (!label || label.length > 60) continue;
+                        if (/xem thêm|see more|phản hồi|reply|chia sẻ|share/.test(label)) continue;
+                        if (/bình luận|comment/.test(label)) add(node);
                     }
-                    // fallback: action bar — 3 nút like/comment/share thường nằm cuối card,
-                    // chọn nút thứ 2 (comment) trong cụm nút có svg
-                    const bars = el.querySelectorAll('[role="button"]');
-                    const icons = [];
-                    for (const n of bars) {
-                        const r = n.getBoundingClientRect();
-                        if (r.width < 20 || r.height < 14) continue;
-                        if (!n.querySelector('svg')) continue;
-                        icons.push(n);
+                    const likeRe = /^(thích|like)$/i;
+                    let likeBtn = null;
+                    for (const node of el.querySelectorAll('[role="button"], [tabindex="0"]')) {
+                        const aria = (node.getAttribute('aria-label') || '').trim();
+                        const text = (node.innerText || '').trim();
+                        if (likeRe.test(aria) || likeRe.test(text)) { likeBtn = node; break; }
                     }
-                    // comment icon là nút giữa (index 1) trong cụm 3 nút cuối cùng của card
-                    if (icons.length >= 3) {
-                        const last3 = icons.slice(-3);
-                        last3[1].scrollIntoView({block:'center'});
-                        last3[1].click();
-                        return 'clicked-mid';
+                    if (likeBtn) {
+                        const likeBox = likeBtn.getBoundingClientRect();
+                        const mid = likeBox.top + likeBox.height / 2;
+                        const row = Array.from(el.querySelectorAll('[role="button"], [tabindex="0"]')).filter((node) => {
+                            if (node === likeBtn || !visible(node)) return false;
+                            const box = node.getBoundingClientRect();
+                            const center = box.top + box.height / 2;
+                            return Math.abs(center - mid) < 26 && box.left >= likeBox.left - 4;
+                        });
+                        row.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+                        const beside = row.find((node) => node.getBoundingClientRect().left > likeBox.right - 10);
+                        if (beside) add(beside);
                     }
-                    return '';
-                }"""
+                    const target = targets[attempt];
+                    if (!target) return 'no-comment-btn';
+                    target.scrollIntoView({block: 'center'});
+                    target.click();
+                    return 'clicked';
+                }""",
+                attempt,
             )
-            if opened:
-                self.log.info("Đã bấm icon comment (%s)", opened)
-                await self.page.wait_for_timeout(900)
-            else:
-                self.log.warning("JS không tìm được nút comment trong card")
-            # đợi composer render thêm 3s
-            if not await composer.count():
-                try:
-                    await composer.first.wait_for(state="visible", timeout=3000)
-                except Exception:
-                    pass
-        if not await composer.count():
-            # dump đoạn html của card để debug selector (cắt 300 ký tự)
+            if opened != "clicked":
+                break
             try:
-                snippet = await card.evaluate(
-                    "(el) => (el.innerText || '').replace(/\\s+/g,' ').slice(0,300)"
-                )
-                self.log.warning("Không thấy ô comment. Card text: %s", snippet)
+                await dialog.first.wait_for(state="visible", timeout=1500)
             except Exception:
-                self.log.warning("Không thấy ô comment trong khung bài")
+                try:
+                    await composer.first.wait_for(state="visible", timeout=1000)
+                except Exception:
+                    await self.page.wait_for_timeout(400)
+        in_dialog = await dialog.count()
+        box = dialog if in_dialog else composer
+        if not await box.count():
+            self.log.warning("Không thấy ô comment trong khung bài")
+            await self._close_post_dialog()
             return False
         try:
-            await composer.first.scroll_into_view_if_needed()
-            await self._set_comment_text(composer.first, comment_text)
-            await composer.first.press("Enter")
-            posted = card.get_by_text(comment_text, exact=True)
+            await self._set_comment_text(box.first, comment_text)
+            await self.page.keyboard.press("Enter")
+            await self.page.wait_for_timeout(800)
+            scope = self.page.locator('[role="dialog"]') if in_dialog else card
+            posted = scope.get_by_text(comment_text, exact=True)
             if not await posted.count():
                 self.log.warning("Không xác nhận được comment đã hiện trong khung bài")
+                if in_dialog:
+                    await self._close_post_dialog()
                 return False
             self.log.info("Đã comment ngay trên bài đang hiện")
+            if in_dialog:
+                await self._close_post_dialog()
             return True
-        except (ValueError, RuntimeError) as error:
-            self.log.warning("Comment ngay trên bài không thực hiện được: %s", error)
+        except Exception as error:
+            self.log.warning("Comment ngay trên bài không thực hiện được: %s", type(error).__name__)
+            await self._close_post_dialog()
             return False
 
     async def post_comment(self, post_id, comment_text):
