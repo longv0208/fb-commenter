@@ -9,15 +9,21 @@ Có hai cách chạy:
 
 ## Cài đặt
 
-Cần Python 3.12 và Chrome đã cài trên máy.
+Cần Python 3.10+ và Chrome đã cài trên máy. **Repo dùng Git LFS** cho `model.safetensors` (~515MB) — cần `git lfs` trước khi clone, hoặc `git lfs pull` sau khi clone, nếu không file model chỉ là pointer text và PhoBERT filter không load được.
 
 ```powershell
+git lfs install          # một lần duy nhất trên máy
+git clone <repo>         # LFS tự pull nếu đã install; nếu clone rồi: git lfs pull
 cd "E:\Telegram Desktop\tool cmt\tools\fb-commenter"
-pip install -r requirements.txt
+
+# venv (khuyến nghị — PhoBERT cần torch ~4GB)
+python -m venv .venv && .venv\Scripts\pip install -r requirements.txt
+# PhoBERT (chỉ khi dùng use_phobert): torch + transformers + sentencepiece
+.venv\Scripts\pip install torch transformers==4.46.3 tokenizers==0.20.3 accelerate==1.1.1 sentencepiece
 python -m playwright install
 ```
 
-Máy này đang dùng Python tại `C:\Users\FPTSHOP\AppData\Local\Temp\invpw-venv\Scripts\python.exe`. Lệnh bên dưới viết tắt là `python`.
+Máy này đang dùng venv tại `E:\venv-cmt\Scripts\python.exe` (torch 2.5.1+cu121 + transformers 4.46.3). Lệnh bên dưới viết tắt là `python`.
 
 ## Dữ liệu nằm ngoài git
 
@@ -96,7 +102,13 @@ Xem bài sẽ comment, chưa gửi:
 python main.py campaign fpt_courses --dry-run --no-proxy
 ```
 
-`use_jev` mặc định là `false`: bài khớp từ khóa được comment luôn. Đặt `true` thì cần biến môi trường `JEV_API_KEY`. Jev trả nhãn `comment` với độ tin cậy từ `jev_confidence` thì mới gửi. Lỗi Jev thì bỏ bài đó.
+Lọc ngữ nghĩa hai tầng sau `keyword_match`, đặt trong campaign JSON:
+
+- `use_phobert: true` → sau khi bài khớp keyword, PhoBERT (local, `models/phobert-filter/`, đã fine-tune trên ~1300 mẫu) chấm `P(true)`; `>= phobert_threshold` (mặc định 0.8) mới comment. Cần torch + transformers trong venv; GPU nhanh hơn nhưng CPU vẫn chạy.
+- `phobert_review_all: true` → PhoBERT duyệt cả bài không khớp keyword.
+- Tương thích cũ: `use_jev`/`jev_confidence`/`jev_review_all` được đọc như `use_phobert`/`phobert_threshold`/`phobert_review_all` khi key mới chưa có.
+
+Jev (LLM API bên ngoài, `jev_client.py`) vẫn còn trong repo nhưng không được gọi trong run path. `JEV_API_KEY` đọc từ biến môi trường hoặc settings DB (điền qua màn Cài đặt/API) — chỉ dùng nếu wire lại Jev.
 
 Lịch sử nằm ở `tools/fb-commenter/data/app.db`. Bài đã gửi thành công không bị gửi lại.
 
@@ -137,9 +149,10 @@ cd desktop && npm run dist
 
 - Dashboard: danh sách account + trạng thái + start/stop nhanh.
 - Tài khoản: thêm/sửa/xóa (cookie, page id, proxy, profile dir persistent).
-- Chạy: chọn nhiều account, mode UID/Campaign, delay, headless, dry-run.
+- Chạy: chọn nhiều account, mode UID/Campaign, delay, headless, dry-run, không proxy.
+- Campaign: editor đầy đủ cho JSON campaign — groups, subjects, help_phrases, mọi tham số scroll/giới hạn, và bộ lọc PhoBERT (`use_phobert`, threshold, review_all). Legacy `use_jev`/`jev_*` được dịch sang `phobert_*` khi load và ghi lại sạch khi save.
 - Logs: stream real-time theo account, lọc level, tìm kiếm, export `.log`.
-- Cài đặt: JEV API key, data root, delay mặc định.
+- Cài đặt: data root, delay mặc định (JEV key field đã bỏ — Jev không còn dùng).
 
 Mỗi account chạy song song mở 1 cửa sổ Chrome riêng (proxy + profile riêng).
 Cookie của account lưu trong `data/app.db` (plaintext — chỉ dùng local).
