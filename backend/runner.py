@@ -1,8 +1,10 @@
 """AccountRunner: runs one Facebook account job (uid or campaign) as an asyncio task."""
 import asyncio
 import logging
+import os
 from pathlib import Path
 
+from backend import store
 from backend.file_logs import attach as attach_file_log, detach as detach_file_log
 from facebook_fanpage_commenter import FacebookFanpageCommenter
 from campaign_run import run_campaign
@@ -91,6 +93,18 @@ class AccountRunner:
     async def _run(self):
         attach_file_log(self.name)
         try:
+            # Surface jev_api_key from DB settings to the env Jev reads. Only set when
+            # not already provided externally so shell env still wins.
+            try:
+                db = store.connect()
+                try:
+                    key = store.get_settings(db).get("jev_api_key")
+                finally:
+                    db.close()
+                if key and not os.environ.get("JEV_API_KEY"):
+                    os.environ["JEV_API_KEY"] = key
+            except Exception:
+                pass
             commenter = self._build_commenter()
             self.status = "running"
             if self.mode == "campaign":
