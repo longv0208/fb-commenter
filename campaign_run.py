@@ -8,7 +8,7 @@ from pathlib import Path
 from campaign_store import already_commented, connect, post_status, save_comment, save_post, story_already_commented
 from image_text import read_png
 from comment_job import CommentJob
-from jev_client import JevError, review_post
+from phobert_filter import PhobertError, review_post
 from post_rules import HELP_PHRASES, fold, hidden_author_ids, keyword_match
 
 logger = logging.getLogger("fb_commenter")
@@ -31,7 +31,7 @@ def load_campaign(parent_dir, name):
         raise ValueError(f"Campaign {name} chưa có group")
     data.setdefault("subjects", [])
     data.setdefault("help_phrases", list(HELP_PHRASES))
-    data.setdefault("use_jev", False)
+    data.setdefault("use_phobert", data.get("use_jev", False))
     data.setdefault("sort_newest", False)
     data.setdefault("max_scrolls", 30)
     data.setdefault("empty_scroll_limit", 4)
@@ -40,8 +40,8 @@ def load_campaign(parent_dir, name):
     data.setdefault("max_comments_per_group", 5)
     data.setdefault("max_comments_per_run", 15)
     data.setdefault("cooldown_seconds", 120)
-    data.setdefault("jev_confidence", 0.8)
-    data.setdefault("jev_review_all", False)
+    data.setdefault("phobert_threshold", data.get("jev_confidence", 0.8))
+    data.setdefault("phobert_review_all", data.get("jev_review_all", False))
     data["name"] = name
     return data
 
@@ -211,6 +211,7 @@ async def scan_group(commenter, group_url, campaign, db, pool, commented_total, 
     skipped_failed = 0
     skipped_empty = 0
     skipped_duplicate = 0
+    skipped_filter = 0
     empty_rounds = 0
     for _ in range(int(campaign["max_scrolls"])):
         if commented_total >= int(campaign["max_comments_per_run"]):
@@ -241,6 +242,23 @@ async def scan_group(commenter, group_url, campaign, db, pool, commented_total, 
                 skipped_keyword += 1
                 save_post(db, item, "filtered", account_name=_current_account)
                 continue
+            # Tang 2: PhoBERT loc theo ngu nghia cac bai da pass keyword
+            if campaign.get("use_phobert"):
+                try:
+                    label, confidence = await review_post(
+                        item.get("text", ""), campaign["subjects"],
+                        threshold=float(campaign["phobert_threshold"]),
+                    )
+                    save_post(db, item, "comment" if label == "comment" else "skip",
+                              label, confidence, account_name=_current_account)
+                    if label != "comment":
+                        skipped_filter += 1
+                        log.info("PhoBERT bỏ (p=%.2f) | %s", confidence, preview)
+                        continue
+                except PhobertError as e:
+                    log.warning("PhoBERT lỗi, bỏ qua bài: %s", e)
+                    save_post(db, item, "filter_failed", account_name=_current_account)
+                    continue
             log.info("Khớp, comment ngay | %s", preview)
             if dry_run:
                 continue
@@ -274,13 +292,14 @@ async def scan_group(commenter, group_url, campaign, db, pool, commented_total, 
             ratio,
         )
         await commenter.page.wait_for_timeout(int(campaign["scroll_pause_ms"]))
-    skipped = skipped_keyword + skipped_done + skipped_failed
+    skipped = skipped_keyword + skipped_done + skipped_failed + skipped_filter
     log.info(
-        "Tổng kết: đọc %s bài, comment %s, bỏ qua %s (không khớp %s, đã comment %s, không gửi được %s)",
+        "Tổng kết: đọc %s bài, comment %s, bỏ qua %s (không khớp %s, AI loại %s, đã comment %s, không gửi được %s)",
         len(seen),
         group_comments,
         skipped,
         skipped_keyword,
+        skipped_filter,
         skipped_done,
         skipped_failed,
     )
@@ -308,7 +327,7 @@ def select_posts(posts, campaign, hidden_ids, page_id, db, log=None):
             save_post(db, post, "commented", account_name=_current_account)
             continue
         matched = keyword_match(post.get("text", ""), campaign["subjects"], campaign.get("help_phrases"))
-        if not matched and not campaign["jev_review_all"]:
+        if not matched and not campaign["phobert_review_all"]:
             save_post(db, post, "filtered", account_name=_current_account)
             continue
         log.info("Khớp %s | %s", post["post_url"], preview)
@@ -316,17 +335,20 @@ def select_posts(posts, campaign, hidden_ids, page_id, db, log=None):
     return selected, hidden_count
 
 
-def apply_jev(posts, campaign, db, log=None):
+async def apply_phobert(posts, campaign, db, log=None):
     log = log or logger
     ready = []
+    threshold = float(campaign["phobert_threshold"])
     for post in posts:
         try:
-            label, confidence = review_post(post.get("text", ""), campaign["subjects"])
-        except JevError as error:
-            log.warning("Jev bỏ qua bài: %s", error)
-            save_post(db, post, "jev_failed", account_name=_current_account)
+            label, confidence = await review_post(
+                post.get("text", ""), campaign["subjects"], threshold=threshold
+            )
+        except PhobertError as error:
+            log.warning("PhoBERT bỏ qua bài: %s", error)
+            save_post(db, post, "filter_failed", account_name=_current_account)
             continue
-        passed = label == "comment" and confidence >= float(campaign["jev_confidence"])
+        passed = label == "comment"
         save_post(db, post, "comment" if passed else "skip", label, confidence, account_name=_current_account)
         if passed:
             ready.append(post)

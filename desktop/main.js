@@ -34,7 +34,7 @@ function spawnBackend(port) {
 
   const proc = spawn(exe, args, {
     cwd: REPO_ROOT,
-    env: { ...process.env, PYTHONUNBUFFERED: "1" },
+    env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONIOENCODING: "utf-8" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const log = backendLogStream();
@@ -48,8 +48,10 @@ function spawnBackend(port) {
 }
 
 function resolvePython() {
-  // dev: ưu tiên venv của project, rồi PATH
+  // dev: ưu tiên E:\venv-cmt (chứa torch + transformers cho PhoBERT),
+  // rồi venv của project, rồi PATH
   const candidates = [
+    "E:\\venv-cmt\\Scripts\\python.exe",
     path.join(REPO_ROOT, ".venv", "Scripts", "python.exe"),
     path.join(REPO_ROOT, "venv", "Scripts", "python.exe"),
     "python",

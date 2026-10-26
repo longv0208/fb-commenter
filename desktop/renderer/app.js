@@ -61,6 +61,7 @@
     dashboard: "views/dashboard.html",
     accounts: "views/accounts.html",
     run: "views/run.html",
+    campaigns: "views/campaigns.html",
     logs: "views/logs.html",
     settings: "views/settings.html",
   };

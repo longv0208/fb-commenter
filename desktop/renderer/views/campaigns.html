@@ -1,0 +1,46 @@
+<h1>Campaign</h1>
+<div class="row" style="align-items:flex-start">
+  <div class="card" style="flex:0.7;min-width:220px">
+    <div class="toolbar" style="margin-bottom:10px">
+      <b style="flex:1">Danh sách</b>
+      <button class="btn" id="btn-camp-new">+ Mới</button>
+    </div>
+    <div id="camp-list" class="account-checklist"></div>
+  </div>
+  <div class="card" style="flex:2">
+    <b>Cấu hình</b>
+    <div class="row" style="margin-top:10px">
+      <div><label>Tên</label><input type="text" id="camp-name" placeholder="vd: fpt_courses"></div>
+      <div><label>Cooldown giữa comment (giây)</label><input type="number" id="camp-cooldown" min="0"></div>
+    </div>
+    <label>Group URLs (mỗi dòng một link)</label>
+    <textarea id="camp-groups" rows="3" placeholder="https://www.facebook.com/groups/.../"></textarea>
+    <div class="row">
+      <div><label>Subjects (phẩy cách)</label><input type="text" id="camp-subjects" placeholder="csd, tool, mad"></div>
+      <div><label>Help phrases (phẩy cách)</label><input type="text" id="camp-help" placeholder="cần, tìm"></div>
+    </div>
+    <div class="row">
+      <div><label>Max scrolls</label><input type="number" id="camp-max-scrolls" min="1"></div>
+      <div><label>Empty scroll limit</label><input type="number" id="camp-empty-scroll" min="1"></div>
+      <div><label>Scroll pixels</label><input type="number" id="camp-scroll-px" min="100"></div>
+    </div>
+    <div class="row">
+      <div><label>Scroll pause (ms)</label><input type="number" id="camp-scroll-pause" min="200"></div>
+      <div><label>Scroll ratio</label><input type="number" id="camp-scroll-ratio" step="0.05" min="0.05" max="1"></div>
+      <div><label>Max comment/group</label><input type="number" id="camp-max-group" min="1"></div>
+      <div><label>Max comment/run</label><input type="number" id="camp-max-run" min="1"></div>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="camp-sort-newest"><label for="camp-sort-newest" style="margin:0">Sort bài mới nhất</label>
+      <input type="checkbox" id="camp-use-phobert" style="margin-left:16px"><label for="camp-use-phobert" style="margin:0">Lọc bằng PhoBERT</label>
+      <input type="checkbox" id="camp-phobert-all" style="margin-left:16px"><label for="camp-phobert-all" style="margin:0">PhoBERT duyệt tất cả (kể cả không khớp keyword)</label>
+    </div>
+    <div class="row">
+      <div><label>PhoBERT threshold (0-1)</label><input type="number" id="camp-phobert-th" step="0.05" min="0" max="1"></div>
+    </div>
+    <div class="toolbar" style="margin-top:14px">
+      <button class="btn btn-primary" id="btn-camp-save">Lưu</button>
+      <span class="muted" id="camp-msg"></span>
+    </div>
+  </div>
+</div>

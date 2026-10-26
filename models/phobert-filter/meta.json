@@ -1,0 +1,18 @@
+{
+  "base_model": "vinai/phobert-base",
+  "max_len": 256,
+  "train_samples": 1114,
+  "test_samples": 197,
+  "eval": {
+    "eval_loss": 0.42184683680534363,
+    "eval_accuracy": 0.9137055837563451,
+    "eval_f1": 0.6666666666666666,
+    "eval_precision": 0.5862068965517241,
+    "eval_recall": 0.7727272727272727,
+    "eval_runtime": 11.3156,
+    "eval_samples_per_second": 17.41,
+    "eval_steps_per_second": 1.149,
+    "epoch": 4.0
+  },
+  "recommended_threshold": 0.7
+}
